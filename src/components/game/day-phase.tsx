@@ -214,6 +214,15 @@ function DayStepRenderer({
         />
       )
     
+    case 'last_words':
+      return (
+        <LastWordsStep
+          players={players}
+          deaths={deaths}
+          onNextStep={onNextStep}
+        />
+      )
+    
     case 'discussion':
       return (
         <DiscussionStep
@@ -233,6 +242,7 @@ function DayStepRenderer({
           votes={dayState.votes}
           onVote={onVote}
           onNextStep={onNextStep}
+          onBomb={onBomb}
         />
       )
     
@@ -251,7 +261,7 @@ function DayStepRenderer({
   }
 }
 
-// 天亮环节
+// 天亮环节 - 只公布死讯，不处理遗言
 function DawnStep({ 
   players, 
   deaths, 
@@ -261,16 +271,6 @@ function DawnStep({
   deaths: number[]
   onNextStep: () => void
 }) {
-  const [currentDeathIndex, setCurrentDeathIndex] = useState(0)
-
-  const handleNext = () => {
-    if (currentDeathIndex < deaths.length - 1) {
-      setCurrentDeathIndex(currentDeathIndex + 1)
-    } else {
-      onNextStep()
-    }
-  }
-
   if (deaths.length === 0) {
     return (
       <div className="space-y-4">
@@ -300,20 +300,9 @@ function DawnStep({
           ) : null
         })}
       </div>
-
-      {/* 遗言环节 */}
-      {currentDeathIndex < deaths.length && (
-        <Card>
-          <CardContent className="p-4">
-            <DialogueBox 
-              text={DIALOGUE_SCRIPTS.dawn.lastWords(deaths[currentDeathIndex])} 
-            />
-          </CardContent>
-        </Card>
-      )}
       
-      <Button onClick={handleNext} className="w-full">
-        {currentDeathIndex < deaths.length - 1 ? '下一位遗言' : '进入讨论'}
+      <Button onClick={onNextStep} className="w-full">
+        继续
       </Button>
     </div>
   )
@@ -466,14 +455,22 @@ function VoteStep({
   players, 
   votes, 
   onVote, 
-  onNextStep 
+  onNextStep,
+  onBomb 
 }: any) {
   const [currentVoter, setCurrentVoter] = useState<number | null>(null)
   const [selectedTarget, setSelectedTarget] = useState<number | null>(null)
+  const [showBombDialog, setShowBombDialog] = useState<{ bomber: number } | null>(null)
+  const [selectedBombTarget, setSelectedBombTarget] = useState<number | null>(null)
   
   const alivePlayers = players.filter((p: Player) => p.isAlive)
   const remainingVoters = alivePlayers.filter((p: Player) => 
     !votes.some((v: any) => v.voter === p.seatNumber)
+  )
+
+  // 找到可以自爆的狼人
+  const canBombWolves = alivePlayers.filter((p: Player) => 
+    p.role.team === 'werewolf' && !p.hasUsedAbility?.bomb
   )
 
   const handleVote = () => {
@@ -489,6 +486,18 @@ function VoteStep({
       onVote(currentVoter, 0) // 使用0表示弃票
       setCurrentVoter(null)
       setSelectedTarget(null)
+    }
+  }
+
+  const handleBombClick = (bomberId: number) => {
+    setShowBombDialog({ bomber: bomberId })
+  }
+
+  const handleConfirmBomb = () => {
+    if (showBombDialog && selectedBombTarget) {
+      onBomb(showBombDialog.bomber, selectedBombTarget)
+      setShowBombDialog(null)
+      setSelectedBombTarget(null)
     }
   }
 
@@ -579,6 +588,65 @@ function VoteStep({
       >
         投票完成
       </Button>
+
+      {/* 狼人自爆选项 */}
+      {canBombWolves.length > 0 && (
+        <Card>
+          <CardContent className="p-4">
+            <h3 className="font-medium mb-3 text-red-600">狼人自爆</h3>
+            <p className="text-sm text-gray-600 mb-3">投票期间，狼人可以选择自爆</p>
+            <div className="flex flex-wrap gap-2">
+              {canBombWolves.map((wolf: Player) => (
+                <Button 
+                  key={wolf.seatNumber}
+                  onClick={() => handleBombClick(wolf.seatNumber)}
+                  variant="destructive"
+                  size="sm"
+                >
+                  {wolf.seatNumber}号{wolf.role.name}自爆
+                </Button>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 自爆目标选择对话框 */}
+      {showBombDialog && (
+        <Card className="border-red-500">
+          <CardContent className="p-4">
+            <h3 className="font-medium mb-3 text-red-600">
+              {showBombDialog.bomber}号狼人自爆 - 选择带走的玩家
+            </h3>
+            <div className="player-grid mb-3">
+              {alivePlayers.filter(p => p.seatNumber !== showBombDialog.bomber).map((player: Player) => (
+                <PlayerCard
+                  key={player.seatNumber}
+                  player={player}
+                  isSelected={selectedBombTarget === player.seatNumber}
+                  isTargetable={true}
+                  onClick={() => setSelectedBombTarget(player.seatNumber)}
+                />
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <Button 
+                onClick={handleConfirmBomb}
+                disabled={!selectedBombTarget}
+                variant="destructive"
+              >
+                确认自爆
+              </Button>
+              <Button 
+                onClick={() => setShowBombDialog(null)}
+                variant="outline"
+              >
+                取消
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }
@@ -590,7 +658,7 @@ function ExecutionStep({
   onExecute, 
   onNextPhase 
 }: any) {
-  const [skillPhase, setSkillPhase] = useState<'waiting' | 'countdown' | 'completed'>('waiting')
+  const [skillPhase, setSkillPhase] = useState<'waiting' | 'last_words' | 'countdown' | 'completed'>('waiting')
   const [playerExecuted, setPlayerExecuted] = useState(false)
   
   const voteResult = calculateVoteResult(votes)
@@ -612,6 +680,10 @@ function ExecutionStep({
   const handleExecute = () => {
     setPlayerExecuted(true)
     onExecute(executedPlayer)
+    setSkillPhase('last_words')
+  }
+
+  const handleLastWordsComplete = () => {
     setSkillPhase('countdown')
   }
 
@@ -655,6 +727,33 @@ function ExecutionStep({
         </>
       ) : (
         <>
+          {/* 遗言阶段 */}
+          {skillPhase === 'last_words' && (
+            <Card>
+              <CardContent className="p-4 text-center">
+                <h3 className="font-medium mb-3">遗言时间</h3>
+                <DialogueBox 
+                  text={DIALOGUE_SCRIPTS.dawn.lastWords(executedPlayer)} 
+                />
+                {player && (
+                  <div className="mt-3">
+                    <PlayerCard
+                      player={player}
+                      showRole={true}
+                      showStatus={true}
+                    />
+                  </div>
+                )}
+                <Button 
+                  onClick={handleLastWordsComplete}
+                  className="mt-4"
+                >
+                  遗言完毕
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
           {/* 技能选择倒计时阶段 */}
           {skillPhase === 'countdown' && (
             <Card>
@@ -840,8 +939,11 @@ function PoliceVoteStep({
   const candidates = dayState.policeCandidates || []
   const policeVotes = dayState.policeVotes || []
   
+  // 在平票加投时，只有非候选人可以投票；首轮投票候选人也不能投票
+  const isTieBreaker = dayState.policeTieBreaker || false
   const remainingVoters = alivePlayers.filter((p: Player) => 
-    !policeVotes.some((v: any) => v.voter === p.seatNumber)
+    !policeVotes.some((v: any) => v.voter === p.seatNumber) &&
+    !candidates.includes(p.seatNumber) // 上警候选人不能投票
   )
 
   const handleVote = () => {
@@ -865,8 +967,8 @@ function PoliceVoteStep({
 
   return (
     <div className="space-y-4">
-      <DialogueBox text={DIALOGUE_SCRIPTS.police.vote} />
-      <DialogueBox text="请为心目中的警长候选人投票" />
+      <DialogueBox text={isTieBreaker ? DIALOGUE_SCRIPTS.police.tie : DIALOGUE_SCRIPTS.police.vote} />
+      <DialogueBox text={isTieBreaker ? "平票加投，请为心目中的警长候选人投票" : "请为心目中的警长候选人投票"} />
       
       <Card>
         <CardContent className="p-4">
@@ -950,6 +1052,74 @@ function PoliceVoteStep({
         className="w-full"
       >
         完成警长选举
+      </Button>
+    </div>
+  )
+}
+
+// 遗言环节
+function LastWordsStep({ 
+  players, 
+  deaths, 
+  onNextStep 
+}: {
+  players: Player[]
+  deaths: number[]
+  onNextStep: () => void
+}) {
+  const [currentDeathIndex, setCurrentDeathIndex] = useState(0)
+
+  const handleNext = () => {
+    if (currentDeathIndex < deaths.length - 1) {
+      setCurrentDeathIndex(currentDeathIndex + 1)
+    } else {
+      onNextStep()
+    }
+  }
+
+  // 如果没有死亡玩家，直接跳过
+  if (deaths.length === 0) {
+    return (
+      <div className="space-y-4">
+        <DialogueBox text="没有玩家需要发表遗言" />
+        <Button onClick={onNextStep} className="w-full">
+          继续游戏
+        </Button>
+      </div>
+    )
+  }
+
+  const currentDeadPlayer = players.find(p => p.seatNumber === deaths[currentDeathIndex])
+
+  return (
+    <div className="space-y-4">
+      <DialogueBox text="遗言环节" />
+      
+      {currentDeadPlayer && (
+        <>
+          <Card>
+            <CardContent className="p-4 text-center">
+              <DialogueBox 
+                text={DIALOGUE_SCRIPTS.dawn.lastWords(deaths[currentDeathIndex])} 
+              />
+              <div className="mt-3">
+                <PlayerCard
+                  player={currentDeadPlayer}
+                  showRole={true}
+                  showStatus={true}
+                />
+              </div>
+            </CardContent>
+          </Card>
+          
+          <div className="text-center text-sm text-gray-600">
+            遗言进度：{currentDeathIndex + 1} / {deaths.length}
+          </div>
+        </>
+      )}
+      
+      <Button onClick={handleNext} className="w-full">
+        {currentDeathIndex < deaths.length - 1 ? '下一位遗言' : '结束遗言，进入讨论'}
       </Button>
     </div>
   )

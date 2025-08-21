@@ -50,6 +50,7 @@ interface GameStore {
   removePoliceCandidate: (playerId: number) => void
   addPoliceVote: (voterId: number, targetId: number) => void
   electPoliceChief: () => void
+  startPoliceTieBreaker: (tiedCandidates: number[]) => void
 
   // 辅助功能
   addActionRecord: (record: Omit<ActionRecord, 'id' | 'timestamp'>) => void
@@ -117,9 +118,11 @@ export const useGameStore = create<GameStore>()(
                 votes: [],
                 policeCandidates: [],
                 policeVotes: [],
+                policeTieBreaker: false,
                 completed: false
               },
               history: [],
+              explosionCount: 0,
               winner: null,
               gameEnded: false,
               createdAt: new Date(),
@@ -137,11 +140,36 @@ export const useGameStore = create<GameStore>()(
           const { gameState } = get()
           if (!gameState) return
 
+          // 确定夜晚的第一个可用步骤
+          const allSteps: NightStep[] = ['guard', 'werewolf', 'seer', 'witch', 'hunter_status']
+          const availableSteps = allSteps.filter(step => {
+            switch (step) {
+              case 'guard':
+                return gameState.players.some(p => p.role.type === 'guard' && p.isAlive)
+              case 'werewolf':
+                return gameState.players.some(p => p.role.team === 'werewolf' && p.isAlive)
+              case 'seer':
+                return gameState.players.some(p => p.role.type === 'seer' && p.isAlive)
+              case 'witch':
+                return gameState.players.some(p => p.role.type === 'witch' && p.isAlive)
+              case 'hunter_status':
+                return gameState.players.some(p => p.role.type === 'hunter' && p.isAlive)
+              default:
+                return true
+            }
+          })
+          
+          const firstStep = availableSteps[0] || 'guard'
+
           set({
             gameState: {
               ...gameState,
               phase: 'night',
-              currentStep: 'guard',
+              currentStep: firstStep,
+              nightState: {
+                ...gameState.nightState,
+                currentStep: firstStep
+              },
               updatedAt: new Date()
             }
           })
@@ -187,16 +215,21 @@ export const useGameStore = create<GameStore>()(
             }
             newDayState = gameState.dayState
           } else {
-            // For first round, start with police campaign, otherwise start with dawn
-            newStep = gameState.round === 1 ? 'police_campaign' : 'dawn'
+            // 判断是否需要警长竞选
+            const shouldStartWithPolice = gameState.round === 1 || 
+              (gameState.config.playerCount === 9 && gameState.explosionCount < 1) ||
+              (gameState.config.playerCount === 12 && gameState.explosionCount < 2)
+            
+            newStep = shouldStartWithPolice ? 'police_campaign' : 'dawn'
             newNightState = gameState.nightState
             newDayState = {
-              currentStep: gameState.round === 1 ? 'police_campaign' : 'dawn',
+              currentStep: shouldStartWithPolice ? 'police_campaign' : 'dawn',
               deaths: [],
               speeches: [],
               votes: [],
               policeCandidates: [],
               policeVotes: [],
+              policeTieBreaker: false,
               completed: false
             }
           }
@@ -260,10 +293,14 @@ export const useGameStore = create<GameStore>()(
               get().nextPhase()
             }
           } else {
-            // First round includes police campaign and vote, other rounds skip them
-            const steps: DayStep[] = gameState.round === 1 
-              ? ['police_campaign', 'police_vote', 'dawn', 'discussion', 'vote', 'execution']
-              : ['dawn', 'discussion', 'vote', 'execution']
+            // 判断是否需要警长竞选
+            const shouldIncludePolice = gameState.round === 1 || 
+              (gameState.config.playerCount === 9 && gameState.explosionCount < 1) ||
+              (gameState.config.playerCount === 12 && gameState.explosionCount < 2)
+            
+            const steps: DayStep[] = shouldIncludePolice 
+              ? ['police_campaign', 'police_vote', 'dawn', 'last_words', 'discussion', 'vote', 'execution']
+              : ['dawn', 'last_words', 'discussion', 'vote', 'execution']
             const currentIndex = steps.indexOf(gameState.dayState.currentStep)
             
             if (currentIndex < steps.length - 1) {
@@ -558,7 +595,8 @@ export const useGameStore = create<GameStore>()(
 
         // 自爆
         useBomb: (bomberId: number, targetId: number) => {
-          const { updatePlayer, addActionRecord, checkGameEnd } = get()
+          const { updatePlayer, addActionRecord, checkGameEnd, gameState } = get()
+          if (!gameState) return
           
           updatePlayer(bomberId, {
             isAlive: false,
@@ -572,12 +610,21 @@ export const useGameStore = create<GameStore>()(
           updatePlayer(targetId, {
             isAlive: false,
             deathReason: 'bomb',
-            deathRound: get().gameState?.round,
+            deathRound: gameState.round,
             deathPhase: 'day'
           })
 
+          // 增加爆破计数
+          set({
+            gameState: {
+              ...gameState,
+              explosionCount: gameState.explosionCount + 1,
+              updatedAt: new Date()
+            }
+          })
+
           addActionRecord({
-            round: get().gameState?.round || 0,
+            round: gameState.round,
             phase: 'day',
             actor: bomberId,
             action: 'bomb',
@@ -786,12 +833,34 @@ export const useGameStore = create<GameStore>()(
                 ...gameState,
                 dayState: {
                   ...gameState.dayState,
-                  policeChief: winners[0]
+                  policeChief: winners[0],
+                  policeTieBreaker: false
                 },
                 updatedAt: new Date()
               }
             })
+          } else if (winners.length > 1) {
+            // Handle tie - start tiebreaker with only tied candidates
+            get().startPoliceTieBreaker(winners)
           }
+        },
+
+        startPoliceTieBreaker: (tiedCandidates: number[]) => {
+          const { gameState } = get()
+          if (!gameState) return
+
+          set({
+            gameState: {
+              ...gameState,
+              dayState: {
+                ...gameState.dayState,
+                policeCandidates: tiedCandidates, // Only tied candidates remain
+                policeVotes: [], // Clear previous votes
+                policeTieBreaker: true
+              },
+              updatedAt: new Date()
+            }
+          })
         },
 
         // UI状态管理

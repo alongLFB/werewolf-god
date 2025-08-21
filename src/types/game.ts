@@ -29,7 +29,7 @@ export type GamePhase = 'night' | 'day'
 export type NightStep = 'guard' | 'werewolf' | 'seer' | 'witch' | 'hunter_status'
 
 // 白天步骤
-export type DayStep = 'dawn' | 'police_campaign' | 'police_vote' | 'discussion' | 'vote' | 'execution'
+export type DayStep = 'dawn' | 'police_campaign' | 'police_vote' | 'last_words' | 'discussion' | 'vote' | 'execution'
 
 // 行动类型
 export type ActionType = 
@@ -144,6 +144,7 @@ export interface DayPhaseState {
   policeChief?: number
   policeCandidates: number[] // 上警候选人
   policeVotes: VoteRecord[] // 警长投票
+  policeTieBreaker?: boolean // 是否处于警长平票加投状态
   completed: boolean
 }
 
@@ -166,6 +167,7 @@ export interface GameState {
   nightState: NightPhaseState
   dayState: DayPhaseState
   history: ActionRecord[]
+  explosionCount: number // 爆破次数统计
   winner?: TeamType | null
   gameEnded: boolean
   createdAt: Date

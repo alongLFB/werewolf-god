@@ -13,6 +13,7 @@ import {
   VoteRecord
 } from '@/types'
 import { createGameConfig, shuffleRoles, checkWinCondition } from '@/lib/game-config'
+import { GameStorage } from '@/lib/storage'
 
 interface GameStore {
   // 状态
@@ -22,7 +23,7 @@ interface GameStore {
 
   // 基础操作
   createGame: (params: CreateGameParams) => void
-  loadGame: (gameId: string) => void
+  loadGame: (gameId?: string) => void
   saveGame: () => void
   resetGame: () => void
 
@@ -48,9 +49,15 @@ interface GameStore {
   // 警长竞选
   addPoliceCandidate: (playerId: number) => void
   removePoliceCandidate: (playerId: number) => void
+  withdrawFromPolice: (playerId: number) => void
   addPoliceVote: (voterId: number, targetId: number) => void
+  addPoliceAbstention: (voterId: number) => void
   electPoliceChief: () => void
   startPoliceTieBreaker: (tiedCandidates: number[]) => void
+  transferPoliceChief: (targetId: number | null) => void
+  
+  // 自爆
+  useSelfDestruct: (wolfId: number) => void
 
   // 辅助功能
   addActionRecord: (record: Omit<ActionRecord, 'id' | 'timestamp'>) => void
@@ -117,12 +124,16 @@ export const useGameStore = create<GameStore>()(
                 speeches: [],
                 votes: [],
                 policeCandidates: [],
+                policeWithdrawn: [],
                 policeVotes: [],
+                policeAbstentions: [],
                 policeTieBreaker: false,
+                allowSelfDestruct: false,
                 completed: false
               },
               history: [],
               explosionCount: 0,
+              selfDestructCount: 0,
               winner: null,
               gameEnded: false,
               createdAt: new Date(),
@@ -216,9 +227,11 @@ export const useGameStore = create<GameStore>()(
             newDayState = gameState.dayState
           } else {
             // 判断是否需要警长竞选
-            const shouldStartWithPolice = gameState.round === 1 || 
-              (gameState.config.playerCount === 9 && gameState.explosionCount < 1) ||
-              (gameState.config.playerCount === 12 && gameState.explosionCount < 2)
+            const shouldStartWithPolice = (gameState.round === 1 && !gameState.dayState.policeChief) || 
+              (gameState.round === 2 && !gameState.dayState.policeChief && (
+                (gameState.config.playerCount === 12 || gameState.config.playerCount === 15) && 
+                gameState.selfDestructCount > 0
+              ))
             
             newStep = shouldStartWithPolice ? 'police_campaign' : 'dawn'
             newNightState = gameState.nightState
@@ -228,8 +241,11 @@ export const useGameStore = create<GameStore>()(
               speeches: [],
               votes: [],
               policeCandidates: [],
+              policeWithdrawn: [],
               policeVotes: [],
+              policeAbstentions: [],
               policeTieBreaker: false,
+              allowSelfDestruct: shouldStartWithPolice,
               completed: false
             }
           }
@@ -294,24 +310,31 @@ export const useGameStore = create<GameStore>()(
             }
           } else {
             // 判断是否需要警长竞选
-            const shouldIncludePolice = gameState.round === 1 || 
-              (gameState.config.playerCount === 9 && gameState.explosionCount < 1) ||
-              (gameState.config.playerCount === 12 && gameState.explosionCount < 2)
+            const shouldIncludePolice = (gameState.round === 1 && !gameState.dayState.policeChief) || 
+              (gameState.round === 2 && !gameState.dayState.policeChief && (
+                (gameState.config.playerCount === 12 || gameState.config.playerCount === 15) && 
+                gameState.selfDestructCount > 0
+              ))
             
             const steps: DayStep[] = shouldIncludePolice 
-              ? ['police_campaign', 'police_vote', 'dawn', 'last_words', 'discussion', 'vote', 'execution']
-              : ['dawn', 'last_words', 'discussion', 'vote', 'execution']
+              ? ['police_campaign', 'police_vote', 'dawn', 'skill_activation', 'last_words', 'discussion', 'vote', 'execution']
+              : ['dawn', 'skill_activation', 'last_words', 'discussion', 'vote', 'execution']
+            
+            // 设置是否允许自爆
+            const allowSelfDestruct = ['police_campaign', 'discussion'].includes(gameState.dayState.currentStep)
             const currentIndex = steps.indexOf(gameState.dayState.currentStep)
             
             if (currentIndex < steps.length - 1) {
               const nextStep = steps[currentIndex + 1]
+              const newAllowSelfDestruct = ['police_campaign', 'discussion'].includes(nextStep)
               set({
                 gameState: {
                   ...gameState,
                   currentStep: nextStep,
                   dayState: {
                     ...gameState.dayState,
-                    currentStep: nextStep
+                    currentStep: nextStep,
+                    allowSelfDestruct: newAllowSelfDestruct
                   },
                   updatedAt: new Date()
                 }
@@ -522,10 +545,12 @@ export const useGameStore = create<GameStore>()(
           const { gameState } = get()
           if (!gameState) return
 
+          const isPoliceChief = gameState.dayState.policeChief === voterId
           const newVote: VoteRecord = {
             round: gameState.round,
             voter: voterId,
-            target: targetId
+            target: targetId,
+            isPoliceVote: isPoliceChief
           }
 
           set({
@@ -778,6 +803,39 @@ export const useGameStore = create<GameStore>()(
           })
         },
 
+        withdrawFromPolice: (playerId: number) => {
+          const { gameState, addActionRecord } = get()
+          if (!gameState) return
+
+          // 检查玩家是否是候选人
+          if (!gameState.dayState.policeCandidates.includes(playerId)) {
+            set({ error: '该玩家未上警，无法退水' })
+            return
+          }
+
+          // 从候选人列表中移除，并添加到退水列表
+          set({
+            gameState: {
+              ...gameState,
+              dayState: {
+                ...gameState.dayState,
+                policeCandidates: gameState.dayState.policeCandidates.filter(id => id !== playerId),
+                policeWithdrawn: [...gameState.dayState.policeWithdrawn, playerId]
+              },
+              updatedAt: new Date()
+            },
+            error: null
+          })
+
+          addActionRecord({
+            round: gameState.round,
+            phase: 'day',
+            step: 'police_campaign',
+            actor: playerId,
+            action: 'police_withdraw'
+          })
+        },
+
         addPoliceVote: (voterId: number, targetId: number) => {
           const { gameState, addActionRecord } = get()
           if (!gameState) return
@@ -856,11 +914,128 @@ export const useGameStore = create<GameStore>()(
                 ...gameState.dayState,
                 policeCandidates: tiedCandidates, // Only tied candidates remain
                 policeVotes: [], // Clear previous votes
+                policeAbstentions: [], // Clear abstentions
                 policeTieBreaker: true
               },
               updatedAt: new Date()
             }
           })
+        },
+
+        addPoliceAbstention: (voterId: number) => {
+          const { gameState, addActionRecord } = get()
+          if (!gameState) return
+
+          const abstentions = gameState.dayState.policeAbstentions
+          if (!abstentions.includes(voterId)) {
+            set({
+              gameState: {
+                ...gameState,
+                dayState: {
+                  ...gameState.dayState,
+                  policeAbstentions: [...abstentions, voterId]
+                },
+                updatedAt: new Date()
+              }
+            })
+
+            addActionRecord({
+              round: gameState.round,
+              phase: 'day',
+              step: 'police_vote',
+              actor: voterId,
+              action: 'police_abstain'
+            })
+          }
+        },
+
+        transferPoliceChief: (targetId: number | null) => {
+          const { gameState, addActionRecord } = get()
+          if (!gameState) return
+
+          const previousChief = gameState.dayState.policeChief
+          if (!previousChief) return
+
+          if (targetId) {
+            // Transfer badge to another player
+            set({
+              gameState: {
+                ...gameState,
+                dayState: {
+                  ...gameState.dayState,
+                  policeChief: targetId
+                },
+                updatedAt: new Date()
+              }
+            })
+
+            addActionRecord({
+              round: gameState.round,
+              phase: gameState.phase,
+              actor: previousChief,
+              action: 'police_transfer',
+              target: targetId
+            })
+          } else {
+            // Destroy the badge
+            set({
+              gameState: {
+                ...gameState,
+                dayState: {
+                  ...gameState.dayState,
+                  policeChief: undefined
+                },
+                updatedAt: new Date()
+              }
+            })
+
+            addActionRecord({
+              round: gameState.round,
+              phase: gameState.phase,
+              actor: previousChief,
+              action: 'police_destroy'
+            })
+          }
+        },
+
+        useSelfDestruct: (wolfId: number) => {
+          const { updatePlayer, addActionRecord, checkGameEnd, gameState } = get()
+          if (!gameState) return
+
+          const wolf = gameState.players.find(p => p.seatNumber === wolfId)
+          if (!wolf || wolf.role.team !== 'werewolf' || !wolf.isAlive) return
+
+          // Check if self-destruct is allowed in current phase
+          if (!gameState.dayState.allowSelfDestruct) {
+            set({ error: '当前阶段不允许自爆' })
+            return
+          }
+
+          updatePlayer(wolfId, {
+            isAlive: false,
+            deathReason: 'bomb',
+            deathRound: gameState.round,
+            deathPhase: 'day'
+          })
+
+          // Increment self-destruct count
+          set({
+            gameState: {
+              ...gameState,
+              selfDestructCount: gameState.selfDestructCount + 1,
+              updatedAt: new Date()
+            }
+          })
+
+          addActionRecord({
+            round: gameState.round,
+            phase: 'day',
+            step: gameState.dayState.currentStep,
+            actor: wolfId,
+            action: 'self_destruct'
+          })
+
+          checkGameEnd()
         },
 
         // UI状态管理
@@ -873,16 +1048,82 @@ export const useGameStore = create<GameStore>()(
         },
 
         // 其他操作
-        loadGame: (gameId: string) => {
-          // TODO: 实现从存储加载游戏
-          set({ isLoading: true })
+        loadGame: (gameId?: string) => {
+          set({ isLoading: true, error: null })
+          
+          try {
+            let gameState: GameState | null = null
+            
+            if (gameId) {
+              // 加载特定游戏（从历史记录）
+              const history = GameStorage.getGameHistory()
+              const gameData = history.find(item => item.gameState.id === gameId)
+              gameState = gameData?.gameState || null
+            } else {
+              // 加载当前游戏
+              gameState = GameStorage.loadCurrentGame()
+            }
+            
+            if (gameState) {
+              set({ 
+                gameState, 
+                isLoading: false, 
+                error: null 
+              })
+            } else {
+              set({ 
+                isLoading: false, 
+                error: gameId ? '未找到指定的游戏记录' : '没有可加载的游戏' 
+              })
+            }
+          } catch (error) {
+            console.error('加载游戏失败:', error)
+            set({ 
+              isLoading: false, 
+              error: '加载游戏失败，请重试' 
+            })
+          }
         },
 
         saveGame: () => {
-          // TODO: 实现保存游戏到存储
           const { gameState } = get()
-          if (gameState) {
-            localStorage.setItem(`werewolf-game-${gameState.id}`, JSON.stringify(gameState))
+          if (!gameState) {
+            set({ error: '没有可保存的游戏状态' })
+            return
+          }
+
+          try {
+            // 更新保存时间
+            const updatedGameState = {
+              ...gameState,
+              updatedAt: new Date()
+            }
+            
+            // 使用GameStorage保存
+            GameStorage.saveCurrentGame(updatedGameState)
+            
+            // 如果游戏已结束，也保存到历史记录
+            if (updatedGameState.gameEnded) {
+              GameStorage.saveToHistory(updatedGameState)
+            }
+            
+            // 更新状态并清除错误
+            set({ 
+              gameState: updatedGameState,
+              error: null 
+            })
+            
+            // 显示成功提示（通过临时设置error为成功消息）
+            setTimeout(() => {
+              set({ error: '✅ 游戏已保存' })
+              setTimeout(() => {
+                set({ error: null })
+              }, 2000)
+            }, 100)
+            
+          } catch (error) {
+            console.error('保存游戏失败:', error)
+            set({ error: '保存游戏失败，请重试' })
           }
         },
 

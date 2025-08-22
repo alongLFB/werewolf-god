@@ -5,6 +5,7 @@ import { PhaseIndicator } from './phase-indicator'
 import { NightPhase } from './night-phase'
 import { DayPhase } from './day-phase'
 import { PlayerCard } from './player-card'
+import { ActionLog } from './action-log'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Eye, EyeOff, RotateCcw, Save } from 'lucide-react'
@@ -16,7 +17,8 @@ export function GameBoard() {
     toggleShowPlayerRoles,
     resetGame,
     saveGame,
-    checkGameEnd
+    checkGameEnd,
+    error
   } = useGameStore()
 
   if (!gameState) {
@@ -85,6 +87,17 @@ export function GameBoard() {
             重置游戏
           </Button>
         </div>
+
+        {/* 错误/成功消息显示 */}
+        {error && (
+          <Card className={`mb-4 ${error.includes('✅') ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50'}`}>
+            <CardContent className="p-3">
+              <p className={`text-sm ${error.includes('✅') ? 'text-green-800' : 'text-red-800'}`}>
+                {error}
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
         {/* 主要游戏区域 */}
         <div className="space-y-6">
@@ -155,24 +168,10 @@ function GameStatus() {
           </div>
         </div>
 
-        {/* 游戏历史（最近5条） */}
-        {gameState.history.length > 0 && (
-          <div className="mt-6">
-            <h3 className="font-medium mb-3">最近行动</h3>
-            <div className="space-y-2 max-h-32 overflow-y-auto">
-              {gameState.history.slice(-5).reverse().map(record => (
-                <div key={record.id} className="text-sm p-2 bg-gray-50 rounded">
-                  <span className="text-gray-500">
-                    第{record.round}轮 {record.phase === 'night' ? '夜晚' : '白天'}：
-                  </span>
-                  <span className="ml-2">
-                    {getActionDescription(record)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* 使用新的行动日志组件 */}
+        <div className="mt-6">
+          <ActionLog />
+        </div>
       </CardContent>
     </Card>
   )

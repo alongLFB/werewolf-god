@@ -29,12 +29,14 @@ export type GamePhase = 'night' | 'day'
 export type NightStep = 'guard' | 'werewolf' | 'seer' | 'witch' | 'hunter_status'
 
 // 白天步骤
-export type DayStep = 'dawn' | 'police_campaign' | 'police_vote' | 'last_words' | 'discussion' | 'vote' | 'execution'
+export type DayStep = 'dawn' | 'police_campaign' | 'police_vote' | 'last_words' | 'skill_activation' | 'discussion' | 'vote' | 'execution'
 
 // 行动类型
 export type ActionType = 
   | 'guard' | 'kill' | 'check' | 'poison' | 'antidote' 
   | 'shoot' | 'bomb' | 'duel' | 'vote' | 'hunter_status'
+  | 'self_destruct' | 'police_abstain' | 'police_transfer' | 'police_destroy'
+  | 'police_withdraw'
 
 // 角色能力定义
 export interface Ability {
@@ -143,8 +145,12 @@ export interface DayPhaseState {
   votes: VoteRecord[]
   policeChief?: number
   policeCandidates: number[] // 上警候选人
+  policeWithdrawn: number[] // 退水玩家列表
   policeVotes: VoteRecord[] // 警长投票
+  policeAbstentions: number[] // 弃票玩家列表
   policeTieBreaker?: boolean // 是否处于警长平票加投状态
+  policeTransferTarget?: number // 警长移交目标
+  allowSelfDestruct?: boolean // 当前步骤是否允许自爆
   completed: boolean
 }
 
@@ -168,6 +174,7 @@ export interface GameState {
   dayState: DayPhaseState
   history: ActionRecord[]
   explosionCount: number // 爆破次数统计
+  selfDestructCount: number // 自爆次数统计(用于判断警长竞选)
   winner?: TeamType | null
   gameEnded: boolean
   createdAt: Date
@@ -197,4 +204,10 @@ export interface GameResult {
   survivors: Player[]
   gameLength: number // 游戏轮数
   mvp?: number // MVP玩家座位号
+}
+
+// 本地存储游戏数据
+export interface LocalGameData {
+  gameState: GameState
+  lastSaved: Date
 }

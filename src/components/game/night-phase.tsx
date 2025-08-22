@@ -7,6 +7,7 @@ import { DialogueBox, DIALOGUE_SCRIPTS } from './dialogue-box'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Player, NightStep } from '@/types'
+import { cn } from '@/lib/utils'
 
 export function NightPhase() {
   const {
@@ -40,9 +41,13 @@ export function NightPhase() {
     switch (currentStep) {
       case 'guard':
         setGuardTarget(selectedPlayer)
+        // 自动进入下一步
+        setTimeout(() => nextStep(), 1000)
         break
       case 'werewolf':
         setWolfKillTarget(selectedPlayer)
+        // 自动进入下一步
+        setTimeout(() => nextStep(), 1000)
         break
       case 'seer':
         const target = getPlayer(selectedPlayer)
@@ -50,6 +55,8 @@ export function NightPhase() {
           const result = target.role.team === 'werewolf' ? 'werewolf' : 'good'
           setSeerCheckTarget(selectedPlayer, result)
           setSeerResult(result)
+          // 显示结果3秒后自动进入下一步
+          setTimeout(() => nextStep(), 3000)
         }
         break
     }
@@ -63,10 +70,14 @@ export function NightPhase() {
       setWitchAction(type) // 不使用
     }
     setSelectedPlayer(null)
+    // 自动进入下一步
+    setTimeout(() => nextStep(), 1000)
   }
 
   const handleHunterStatus = (canShoot: boolean) => {
     setHunterStatus(canShoot)
+    // 自动进入下一阶段
+    setTimeout(() => nextStep(), 1000)
   }
 
   const handleBomb = (bomberId: number, targetId: number) => {
@@ -95,6 +106,7 @@ export function NightPhase() {
     <div className="space-y-6">
       <NightStepRenderer
         step={currentStep}
+        gameState={gameState}
         players={players}
         nightState={nightState}
         selectedPlayer={selectedPlayer}
@@ -113,6 +125,7 @@ export function NightPhase() {
 
 interface NightStepRendererProps {
   step: NightStep
+  gameState: any
   players: Player[]
   nightState: any
   selectedPlayer: number | null
@@ -128,6 +141,7 @@ interface NightStepRendererProps {
 
 function NightStepRenderer({
   step,
+  gameState,
   players,
   nightState,
   selectedPlayer,
@@ -171,6 +185,7 @@ function NightStepRenderer({
       return (
         <SeerStep
           players={players}
+          gameState={gameState}
           selectedPlayer={selectedPlayer}
           seerResult={seerResult}
           onPlayerSelect={onPlayerSelect}
@@ -269,12 +284,6 @@ function GuardStep({
         </Button>
         <Button variant="outline" onClick={onNext}>
           跳过守护
-        </Button>
-      </div>
-      
-      <div className="text-center">
-        <Button onClick={onNext} variant="outline" size="sm">
-          进入下一环节
         </Button>
       </div>
       
@@ -417,12 +426,6 @@ function WerewolfStep({
               不击杀
             </Button>
           </div>
-          
-          <div className="text-center">
-            <Button onClick={onNext} variant="outline" size="sm">
-              进入下一环节
-            </Button>
-          </div>
         </>
       )}
       
@@ -433,7 +436,8 @@ function WerewolfStep({
 
 // 预言家环节
 function SeerStep({ 
-  players, 
+  players,
+  gameState,
   selectedPlayer, 
   seerResult, 
   onPlayerSelect, 
@@ -460,45 +464,80 @@ function SeerStep({
       <DialogueBox text={DIALOGUE_SCRIPTS.seer.action} />
       
       <div className="player-grid">
-        {targetablePlayers.map((player: Player) => (
-          <PlayerCard
-            key={player.seatNumber}
-            player={player}
-            isSelected={selectedPlayer === player.seatNumber}
-            isTargetable={true}
-            onClick={() => onPlayerSelect(player.seatNumber)}
-          />
-        ))}
+        {targetablePlayers.map((player: Player) => {
+          // 如果预言家已经查验过这个玩家，显示查验结果
+          const hasBeenChecked = gameState?.history.some((record: any) => 
+            record.action === 'check' && 
+            record.target === player.seatNumber &&
+            record.actor === seer?.seatNumber
+          )
+          const checkResult = gameState?.history.find((record: any) => 
+            record.action === 'check' && 
+            record.target === player.seatNumber &&
+            record.actor === seer?.seatNumber
+          )?.result
+          
+          return (
+            <div key={player.seatNumber} className="relative">
+              <PlayerCard
+                player={player}
+                isSelected={selectedPlayer === player.seatNumber}
+                isTargetable={true}
+                onClick={() => onPlayerSelect(player.seatNumber)}
+              />
+              {hasBeenChecked && (
+                <div className={cn(
+                  "absolute -top-2 -right-2 px-2 py-1 rounded-full text-xs font-bold",
+                  checkResult === 'werewolf' 
+                    ? "bg-red-500 text-white" 
+                    : "bg-green-500 text-white"
+                )}>
+                  {checkResult === 'werewolf' ? '狼' : '好'}
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
       
       {seerResult && selectedPlayer && (
-        <Card>
+        <Card className="border-2 border-amber-400 bg-amber-50">
           <CardContent className="p-4 text-center">
-            <p className="text-lg font-medium">
-              {DIALOGUE_SCRIPTS.seer.result(selectedPlayer, seerResult)}
+            <p className="text-xl font-bold mb-2">
+              🔮 查验结果
+            </p>
+            <p className="text-lg">
+              {selectedPlayer}号玩家是
+              <span className={seerResult === 'werewolf' ? 'text-red-600 font-bold' : 'text-green-600 font-bold'}>
+                {seerResult === 'werewolf' ? ' ✖ 狼人' : ' ✔ 好人'}
+              </span>
+            </p>
+            <p className="text-sm text-gray-600 mt-2">
+              请记住此结果，注意为玩家比手势
             </p>
           </CardContent>
         </Card>
       )}
       
-      <div className="flex gap-2">
-        <Button 
-          onClick={onConfirm} 
-          disabled={!selectedPlayer}
-          className="flex-1"
-        >
-          确认查验
-        </Button>
-        <Button variant="outline" onClick={onNext}>
-          跳过查验
-        </Button>
-      </div>
+      <Button 
+        onClick={() => {
+          if (selectedPlayer && !seerResult) {
+            onConfirm()
+          } else if (seerResult) {
+            onNext()
+          }
+        }} 
+        disabled={!selectedPlayer}
+        className="w-full"
+      >
+        {seerResult ? '继续下一环节' : '确认查验'}
+      </Button>
       
-      <div className="text-center">
-        <Button onClick={onNext} variant="outline" size="sm">
-          进入下一环节
-        </Button>
-      </div>
+      {!seerResult && (
+        <div className="text-center text-sm text-gray-500 mt-2">
+          预言家每个回合必须查验一个玩家
+        </div>
+      )}
       
       <DialogueBox text={DIALOGUE_SCRIPTS.seer.end} />
     </div>

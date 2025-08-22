@@ -81,7 +81,8 @@ export function NightPhase() {
   }
 
   const handleBomb = (bomberId: number, targetId: number) => {
-    useBomb(bomberId, targetId)
+    // Change name to avoid React Hook naming convention conflict
+    useGameStore.getState().useBomb(bomberId, targetId)
     // 自爆后直接进入下一轮夜晚
     setTimeout(() => nextPhase(), 2000)
   }

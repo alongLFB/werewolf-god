@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useGameStore } from "@/store/game-store";
 import { PlayerCard } from "./player-card";
 import { DialogueBox, DIALOGUE_SCRIPTS } from "./dialogue-box";
@@ -15,7 +15,7 @@ export function DayPhase() {
     gameState,
     addVote,
     executePlayer,
-    useShoot,
+    shootPlayer,
     useBomb,
     useDuel,
     nextStep,
@@ -37,13 +37,8 @@ export function DayPhase() {
     type: "hunter" | "wolf_king";
   } | null>(null);
 
-  if (!gameState) return null;
-
-  const { dayState, players, nightState } = gameState;
-  const currentStep = dayState.currentStep;
-
   // 计算今晚死亡的玩家
-  const calculateDeaths = () => {
+  const calculateDeaths = useCallback((nightState: any) => {
     const deaths: number[] = [];
     const wolfKill = nightState.wolfKillTarget;
     const witchAntidote = nightState.witchAntidoteTarget;
@@ -70,26 +65,33 @@ export function DayPhase() {
     }
 
     return [...new Set(deaths)]; // 去重
-  };
+  }, []);
 
   // 在天亮阶段更新玩家死亡状态
   useEffect(() => {
-    if (gameState && dayState.currentStep === "dawn") {
-      const deaths = calculateDeaths();
+    if (gameState && gameState.dayState.currentStep === "dawn") {
+      const deaths = calculateDeaths(gameState.nightState);
       deaths.forEach((playerId) => {
         const player = getPlayer(playerId);
         if (player && player.isAlive) {
           updatePlayer(playerId, {
             isAlive: false,
             deathReason:
-              nightState.witchPoisonTarget === playerId ? "poison" : "knife",
+              gameState.nightState.witchPoisonTarget === playerId
+                ? "poison"
+                : "knife",
             deathRound: gameState.round,
             deathPhase: "night",
           });
         }
       });
     }
-  }, [gameState?.dayState?.currentStep, gameState?.round]);
+  }, [gameState, calculateDeaths, getPlayer, updatePlayer]);
+
+  if (!gameState) return null;
+
+  const { dayState, players, nightState } = gameState;
+  const currentStep = dayState.currentStep;
 
   const handlePlayerSelect = (playerId: number) => {
     setSelectedPlayer(playerId);
@@ -114,7 +116,7 @@ export function DayPhase() {
   };
 
   const handleShoot = (shooterId: number, targetId: number) => {
-    useShoot(shooterId, targetId);
+    shootPlayer(shooterId, targetId);
     setShowShootDialog(null);
 
     // 检查被开枪的目标是否也能开枪
@@ -155,7 +157,7 @@ export function DayPhase() {
         step={currentStep}
         players={players}
         dayState={dayState}
-        deaths={calculateDeaths()}
+        deaths={calculateDeaths(nightState)}
         selectedPlayer={selectedPlayer}
         voteTarget={voteTarget}
         onPlayerSelect={handlePlayerSelect}
@@ -163,6 +165,7 @@ export function DayPhase() {
         onExecute={handleExecute}
         onBomb={useBomb}
         onDuel={useDuel}
+        onShoot={handleShoot}
         onNextStep={nextStep}
         onNextPhase={nextPhase}
         onPoliceCandidate={handlePoliceCandidate}
@@ -198,6 +201,7 @@ interface DayStepRendererProps {
   onExecute: (playerId: number) => void;
   onBomb: (bomberId: number, targetId: number) => void;
   onDuel: (knightId: number, targetId: number) => void;
+  onShoot: (shooterId: number, targetId: number) => void;
   onNextStep: () => void;
   onNextPhase: () => void;
   onPoliceCandidate: (playerId: number, isCandidate: boolean) => void;
@@ -219,6 +223,7 @@ function DayStepRenderer({
   onExecute,
   onBomb,
   onDuel,
+  onShoot,
   onNextStep,
   onNextPhase,
   onPoliceCandidate,
@@ -245,7 +250,7 @@ function DayStepRenderer({
           players={players}
           dayState={dayState}
           onPoliceVote={onPoliceVote}
-          // Removed incorrect usage of onPoliceAbstain outside JSX
+          onPoliceAbstain={onPoliceAbstain}
           onElectPoliceChief={onElectPoliceChief}
           onNextStep={onNextStep}
         />
@@ -254,6 +259,17 @@ function DayStepRenderer({
     case "dawn":
       return (
         <DawnStep players={players} deaths={deaths} onNextStep={onNextStep} />
+      );
+
+    case "skill_activation":
+      return (
+        <SkillActivationStep
+          players={players}
+          deaths={deaths}
+          dayState={dayState}
+          onShoot={onShoot}
+          onNextStep={onNextStep}
+        />
       );
 
     case "last_words":
@@ -274,6 +290,8 @@ function DayStepRenderer({
           onBomb={onBomb}
           onDuel={onDuel}
           onNextStep={onNextStep}
+          dayState={dayState}
+          deaths={deaths}
         />
       );
 
@@ -281,6 +299,7 @@ function DayStepRenderer({
       return (
         <VoteStep
           players={players}
+          dayState={dayState}
           votes={dayState.votes}
           onVote={onVote}
           onNextStep={onNextStep}
@@ -358,13 +377,27 @@ function DiscussionStep({
   onBomb,
   onDuel,
   onNextStep,
+  dayState,
+  deaths,
 }: any) {
-  const [currentSpeaker, setCurrentSpeaker] = useState(1);
+  const [currentSpeaker, setCurrentSpeaker] = useState<number | null>(null);
   const [showSpecialAction, setShowSpecialAction] = useState<
     "bomb" | "duel" | null
   >(null);
+  const [speakingOrder, setSpeakingOrder] = useState<number[]>([]);
+  const [orderSelected, setOrderSelected] = useState(false);
+  const [timerKey, setTimerKey] = useState(0); // 用于重置计时器
 
   const alivePlayers = players.filter((p: Player) => p.isAlive);
+  const policeChief = dayState?.policeChief;
+  const policeChiefPlayer = policeChief
+    ? players.find((p: Player) => p.seatNumber === policeChief)
+    : null;
+
+  // 获取昨晚死亡的玩家（单死情况）
+  const lastNightDeaths = deaths?.length === 1 ? deaths : [];
+  const singleDeath = lastNightDeaths.length === 1 ? lastNightDeaths[0] : null;
+
   const whiteWolf = players.find(
     (p: Player) =>
       p.role.type === "white_wolf" && p.isAlive && !p.hasUsedAbility?.bomb
@@ -374,13 +407,83 @@ function DiscussionStep({
       p.role.type === "knight" && p.isAlive && !p.hasUsedAbility?.duel
   );
 
-  const handleNextSpeaker = () => {
-    const nextSpeaker =
-      alivePlayers.find((p: Player) => p.seatNumber > currentSpeaker)
-        ?.seatNumber || alivePlayers[0]?.seatNumber;
-    if (nextSpeaker) {
-      setCurrentSpeaker(nextSpeaker);
+  // 生成发言顺序
+  const generateSpeakingOrder = (
+    startFrom: number,
+    direction: "left" | "right"
+  ) => {
+    const sortedPlayers = [...alivePlayers].sort(
+      (a, b) => a.seatNumber - b.seatNumber
+    );
+    const startIndex = sortedPlayers.findIndex(
+      (p) => p.seatNumber === startFrom
+    );
+
+    if (startIndex === -1) return sortedPlayers.map((p) => p.seatNumber);
+
+    const order: number[] = [];
+    if (direction === "right") {
+      // 从起始位置向右（号码递增）
+      for (let i = 0; i < sortedPlayers.length; i++) {
+        const index = (startIndex + i) % sortedPlayers.length;
+        order.push(sortedPlayers[index].seatNumber);
+      }
+    } else {
+      // 从起始位置向左（号码递减）
+      for (let i = 0; i < sortedPlayers.length; i++) {
+        const index =
+          (startIndex - i + sortedPlayers.length) % sortedPlayers.length;
+        order.push(sortedPlayers[index].seatNumber);
+      }
     }
+
+    // 确保警长是最后一位发言（归票）
+    if (
+      policeChief &&
+      alivePlayers.some((p: Player) => p.seatNumber === policeChief)
+    ) {
+      const policeIndex = order.indexOf(policeChief);
+      if (policeIndex !== -1 && policeIndex !== order.length - 1) {
+        // 将警长从当前位置移除
+        order.splice(policeIndex, 1);
+        // 将警长添加到最后
+        order.push(policeChief);
+      }
+    }
+
+    return order;
+  };
+
+  // 警长选择发言顺序
+  const handleOrderSelection = (
+    type: "police_left" | "police_right" | "death_left" | "death_right"
+  ) => {
+    let startFrom: number;
+    let direction: "left" | "right";
+
+    if (type === "police_left" || type === "police_right") {
+      startFrom = policeChief;
+      direction = type === "police_left" ? "left" : "right";
+    } else {
+      startFrom = singleDeath;
+      direction = type === "death_left" ? "left" : "right";
+    }
+
+    const order = generateSpeakingOrder(startFrom, direction);
+    setSpeakingOrder(order);
+    setCurrentSpeaker(order[0]);
+    setOrderSelected(true);
+  };
+
+  const handleNextSpeaker = () => {
+    if (!speakingOrder.length || currentSpeaker === null) return;
+
+    const currentIndex = speakingOrder.findIndex((id) => id === currentSpeaker);
+    const nextIndex = (currentIndex + 1) % speakingOrder.length;
+    setCurrentSpeaker(speakingOrder[nextIndex]);
+
+    // 重置计时器
+    setTimerKey((prev) => prev + 1);
   };
 
   const handleSpecialAction = (type: "bomb" | "duel") => {
@@ -400,27 +503,143 @@ function DiscussionStep({
     <div className="space-y-4">
       <DialogueBox text={DIALOGUE_SCRIPTS.discussion.start} />
 
-      <Card>
-        <CardContent className="p-4">
-          <div className="flex items-center justify-between mb-3">
-            <DialogueBox
-              text={DIALOGUE_SCRIPTS.discussion.order(currentSpeaker)}
-            />
-            <CountdownTimer
-              initialSeconds={90} // 1分30秒
-              onTimeUp={() => {
-                // 时间到后可以自动进入下一位或结束
-              }}
-            />
-          </div>
-          <div className="flex gap-2 mt-3">
-            <Button onClick={handleNextSpeaker}>下一位发言</Button>
-            <Button variant="outline" onClick={onNextStep}>
-              结束讨论
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+      {/* 警长选择发言顺序 */}
+      {!orderSelected && policeChiefPlayer && policeChiefPlayer.isAlive && (
+        <Card className="border-yellow-300 bg-yellow-50">
+          <CardContent className="p-4">
+            <h3 className="font-medium mb-3 text-yellow-800">
+              👮‍♂️ 警长选择发言顺序
+            </h3>
+            <p className="text-sm text-yellow-700 mb-3">
+              {policeChief}号警长，请选择发言顺序（警长将最后归票发言）：
+            </p>
+
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <Button
+                onClick={() => handleOrderSelection("police_left")}
+                variant="outline"
+                className="text-sm"
+              >
+                警左发言（{policeChief}号逆时针）
+              </Button>
+              <Button
+                onClick={() => handleOrderSelection("police_right")}
+                variant="outline"
+                className="text-sm"
+              >
+                警右发言（{policeChief}号顺时针）
+              </Button>
+            </div>
+
+            {/* 单死情况下的死左死右选项 */}
+            {singleDeath && (
+              <>
+                <p className="text-sm text-yellow-700 mb-2">
+                  或者基于昨晚单死的 {singleDeath}号：
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    onClick={() => handleOrderSelection("death_left")}
+                    variant="outline"
+                    className="text-sm"
+                  >
+                    死左发言（{singleDeath}号左侧开始）
+                  </Button>
+                  <Button
+                    onClick={() => handleOrderSelection("death_right")}
+                    variant="outline"
+                    className="text-sm"
+                  >
+                    死右发言（{singleDeath}号右侧开始）
+                  </Button>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 发言进行中 */}
+      {orderSelected && currentSpeaker && (
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <DialogueBox text={`${currentSpeaker}号玩家发言`} />
+              <CountdownTimer
+                key={timerKey} // 用key来强制重置计时器
+                initialSeconds={90} // 1分30秒
+                autoStart={true}
+                onTimeUp={() => {
+                  // 时间到后可以自动进入下一位
+                  handleNextSpeaker();
+                }}
+              />
+            </div>
+
+            {/* 显示发言顺序 */}
+            <div className="mb-3 p-2 bg-gray-50 rounded text-sm">
+              <span className="font-medium">发言顺序：</span>
+              {speakingOrder.map((playerId, index) => {
+                const isCurrentSpeaker = playerId === currentSpeaker;
+                const isPoliceChief = playerId === policeChief;
+                const isLastPosition = index === speakingOrder.length - 1;
+
+                return (
+                  <span
+                    key={playerId}
+                    className={`ml-1 ${
+                      isCurrentSpeaker
+                        ? "bg-blue-200 px-1 rounded"
+                        : isPoliceChief && isLastPosition
+                        ? "bg-yellow-200 px-1 rounded font-medium"
+                        : ""
+                    }`}
+                  >
+                    {playerId}号
+                    {isPoliceChief && isLastPosition ? "(警长归票)" : ""}
+                    {index < speakingOrder.length - 1 ? " → " : ""}
+                  </span>
+                );
+              })}
+            </div>
+
+            <div className="flex gap-2 mt-3">
+              <Button onClick={handleNextSpeaker}>
+                下一位发言（重置计时）
+              </Button>
+              <Button variant="outline" onClick={onNextStep}>
+                结束讨论
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 没有警长的情况下的默认发言 */}
+      {!orderSelected && (!policeChiefPlayer || !policeChiefPlayer.isAlive) && (
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <DialogueBox text="自由发言讨论" />
+              <CountdownTimer
+                key={timerKey}
+                initialSeconds={90}
+                onTimeUp={() => {
+                  // 时间到后可以结束讨论
+                }}
+              />
+            </div>
+            <div className="flex gap-2 mt-3">
+              <Button onClick={() => setTimerKey((prev) => prev + 1)}>
+                重置计时器
+              </Button>
+              <Button variant="outline" onClick={onNextStep}>
+                结束讨论
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 特殊技能按钮 */}
       {(whiteWolf || knight) && (
@@ -503,7 +722,14 @@ function DiscussionStep({
 }
 
 // 投票环节
-function VoteStep({ players, votes, onVote, onNextStep, onBomb }: any) {
+function VoteStep({
+  players,
+  dayState,
+  votes,
+  onVote,
+  onNextStep,
+  onBomb,
+}: any) {
   const [currentVoter, setCurrentVoter] = useState<number | null>(null);
   const [selectedTarget, setSelectedTarget] = useState<number | null>(null);
   const [showBombDialog, setShowBombDialog] = useState<{
@@ -613,7 +839,7 @@ function VoteStep({ players, votes, onVote, onNextStep, onBomb }: any) {
         <Card>
           <CardContent className="p-4">
             <h3 className="font-medium mb-3">当前投票情况</h3>
-            
+
             {/* 显示警长信息 */}
             {dayState.policeChief && (
               <div className="mb-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-sm">
@@ -622,7 +848,7 @@ function VoteStep({ players, votes, onVote, onNextStep, onBomb }: any) {
                 </span>
               </div>
             )}
-            
+
             {Object.entries(voteResult.voteCount).map(([target, count]) => (
               <div key={target} className="flex justify-between py-1">
                 <span>{target}号</span>
@@ -782,7 +1008,17 @@ function ExecutionStep({ players, votes, onExecute, onNextPhase }: any) {
           {skillPhase === "last_words" && (
             <Card>
               <CardContent className="p-4 text-center">
-                <h3 className="font-medium mb-3">遗言时间</h3>
+                <div className="flex items-center justify-center gap-4 mb-3">
+                  <h3 className="font-medium">遗言时间</h3>
+                  <CountdownTimer
+                    initialSeconds={90} // 1分30秒
+                    autoStart={true}
+                    onTimeUp={() => {
+                      // 时间到后自动完成遗言
+                      handleLastWordsComplete();
+                    }}
+                  />
+                </div>
                 <DialogueBox
                   text={DIALOGUE_SCRIPTS.dawn.lastWords(executedPlayer)}
                 />
@@ -919,12 +1155,12 @@ function PoliceCampaignStep({
   const handleToggleCandidate = (playerId: number) => {
     const isCandidate = candidates.includes(playerId);
     const isWithdrawn = withdrawnPlayers.includes(playerId);
-    
+
     // 如果已经退水，不能再上警
     if (isWithdrawn) {
       return;
     }
-    
+
     onPoliceCandidate(playerId, !isCandidate);
   };
 
@@ -1028,12 +1264,40 @@ function PoliceVoteStep({
 }: any) {
   const [currentVoter, setCurrentVoter] = useState<number | null>(null);
   const [selectedTarget, setSelectedTarget] = useState<number | null>(null);
+  const [electionFinished, setElectionFinished] = useState(false);
 
   const alivePlayers = players.filter((p: Player) => p.isAlive);
   const candidates = dayState.policeCandidates || [];
   const withdrawnPlayers = dayState.policeWithdrawn || [];
   const policeVotes = dayState.policeVotes || [];
   const policeAbstentions = dayState.policeAbstentions || [];
+
+  // 监听警长选举结果
+  useEffect(() => {
+    if (
+      electionFinished &&
+      !dayState.policeTieBreaker &&
+      dayState.policeChief
+    ) {
+      // 有明确的警长当选，进入下一步
+      onNextStep();
+      setElectionFinished(false);
+    } else if (
+      electionFinished &&
+      !dayState.policeTieBreaker &&
+      !dayState.policeChief
+    ) {
+      // 没有人当选警长（如没有候选人），进入下一步
+      onNextStep();
+      setElectionFinished(false);
+    }
+    // 如果 dayState.policeTieBreaker 为 true，说明发生平票，留在当前环节
+  }, [
+    electionFinished,
+    dayState.policeTieBreaker,
+    dayState.policeChief,
+    onNextStep,
+  ]);
 
   // 在平票加投时，所有人都可以投票（除了候选人和退水玩家）
   const isTieBreaker = dayState.policeTieBreaker || false;
@@ -1070,13 +1334,10 @@ function PoliceVoteStep({
   };
 
   const handleFinishVoting = () => {
-    // 先选举警长，如果有平票会自动设置 policeTieBreaker
+    // 选举警长
     onElectPoliceChief();
-    
-    // 检查是否发生平票，如果没有平票才进入下一步
-    if (!dayState.policeTieBreaker) {
-      onNextStep();
-    }
+    // 设置选举完成标志，让 useEffect 处理后续逻辑
+    setElectionFinished(true);
   };
 
   // 计算投票结果
@@ -1101,7 +1362,7 @@ function PoliceVoteStep({
             : "警长竞选投票：只有非候选人可以投票，也可以选择弃票"
         }
       />
-      
+
       {isTieBreaker && (
         <Card className="border-yellow-300 bg-yellow-50">
           <CardContent className="p-4">
@@ -1224,10 +1485,13 @@ function LastWordsStep({
   onNextStep: () => void;
 }) {
   const [currentDeathIndex, setCurrentDeathIndex] = useState(0);
+  const [timerKey, setTimerKey] = useState(0); // 用于重置计时器
 
   const handleNext = () => {
     if (currentDeathIndex < deaths.length - 1) {
       setCurrentDeathIndex(currentDeathIndex + 1);
+      // 切换到下一位时重置计时器
+      setTimerKey((prev) => prev + 1);
     } else {
       onNextStep();
     }
@@ -1257,6 +1521,18 @@ function LastWordsStep({
         <>
           <Card>
             <CardContent className="p-4 text-center">
+              <div className="flex items-center justify-center gap-4 mb-3">
+                <h3 className="font-medium">遗言时间</h3>
+                <CountdownTimer
+                  key={timerKey} // 用key来强制重置计时器
+                  initialSeconds={90} // 1分30秒
+                  autoStart={true}
+                  onTimeUp={() => {
+                    // 时间到后自动进入下一位或下一步
+                    handleNext();
+                  }}
+                />
+              </div>
               <DialogueBox
                 text={DIALOGUE_SCRIPTS.dawn.lastWords(
                   deaths[currentDeathIndex]
@@ -1283,6 +1559,187 @@ function LastWordsStep({
           ? "下一位遗言"
           : "结束遗言，进入讨论"}
       </Button>
+    </div>
+  );
+}
+
+// 技能发动环节
+function SkillActivationStep({
+  players,
+  deaths,
+  dayState,
+  onShoot,
+  onNextStep,
+}: {
+  players: Player[];
+  deaths: number[];
+  dayState: any;
+  onShoot: (shooterId: number, targetId: number) => void;
+  onNextStep: () => void;
+}) {
+  const [selectedTarget, setSelectedTarget] = useState<number | null>(null);
+  const [currentShooter, setCurrentShooter] = useState<{
+    playerId: number;
+    type: "hunter" | "wolf_king";
+  } | null>(null);
+
+  // 找到需要发动技能的死亡玩家
+  const skillPlayers = deaths
+    .map((deathId) => players.find((p) => p.seatNumber === deathId))
+    .filter((player): player is Player => {
+      if (!player) return false;
+
+      // 猎人：没被毒杀且可以开枪
+      if (player.role.type === "hunter" && player.canShoot) {
+        // 检查是否被毒杀
+        const witchPoison = dayState.witchPoisonTarget;
+        return witchPoison !== player.seatNumber;
+      }
+
+      // 狼王：可以开枪
+      if (player.role.type === "wolf_king" && !player.hasShot) {
+        return true;
+      }
+
+      return false;
+    });
+
+  const alivePlayers = players.filter(
+    (p) => p.isAlive && !deaths.includes(p.seatNumber)
+  );
+
+  // 如果没有可以发动技能的玩家，直接进入下一步
+  if (skillPlayers.length === 0) {
+    return (
+      <div className="space-y-4">
+        <DialogueBox text="没有玩家需要发动技能" />
+        <Button onClick={onNextStep} className="w-full">
+          继续游戏
+        </Button>
+      </div>
+    );
+  }
+
+  const handleShoot = () => {
+    if (currentShooter && selectedTarget) {
+      onShoot(currentShooter.playerId, selectedTarget);
+      setCurrentShooter(null);
+      setSelectedTarget(null);
+
+      // 检查是否还有其他玩家需要发动技能
+      const remainingSkillPlayers = skillPlayers.filter(
+        (p) => p.seatNumber !== currentShooter.playerId
+      );
+      if (remainingSkillPlayers.length === 0) {
+        setTimeout(() => onNextStep(), 1000);
+      }
+    }
+  };
+
+  const handleSkip = () => {
+    if (currentShooter) {
+      setCurrentShooter(null);
+      setSelectedTarget(null);
+
+      // 检查是否还有其他玩家需要发动技能
+      const remainingSkillPlayers = skillPlayers.filter(
+        (p) => p.seatNumber !== currentShooter.playerId
+      );
+      if (remainingSkillPlayers.length === 0) {
+        onNextStep();
+      }
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <DialogueBox text="技能发动阶段" />
+
+      {/* 显示可以发动技能的玩家 */}
+      {!currentShooter && (
+        <Card>
+          <CardContent className="p-4">
+            <h3 className="font-medium mb-3">可以发动技能的玩家</h3>
+            <div className="space-y-2">
+              {skillPlayers.map((player) => (
+                <div
+                  key={player.seatNumber}
+                  className="flex items-center justify-between p-2 border rounded"
+                >
+                  <div>
+                    <span className="font-medium">
+                      {player.seatNumber}号 {player.role.name}
+                    </span>
+                    <span className="text-sm text-gray-600 ml-2">
+                      ({player.role.type === "hunter" ? "猎人开枪" : "狼王开枪"}
+                      )
+                    </span>
+                  </div>
+                  <Button
+                    onClick={() =>
+                      setCurrentShooter({
+                        playerId: player.seatNumber,
+                        type:
+                          player.role.type === "hunter"
+                            ? "hunter"
+                            : "wolf_king",
+                      })
+                    }
+                    size="sm"
+                  >
+                    发动技能
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 选择开枪目标 */}
+      {currentShooter && (
+        <Card>
+          <CardContent className="p-4">
+            <h3 className="font-medium mb-3">
+              {currentShooter.playerId}号
+              {currentShooter.type === "hunter" ? "猎人" : "狼王"}开枪
+            </h3>
+            <p className="text-sm text-gray-600 mb-3">选择要开枪带走的玩家：</p>
+
+            <div className="player-grid mb-3">
+              {alivePlayers.map((player) => (
+                <PlayerCard
+                  key={player.seatNumber}
+                  player={player}
+                  isSelected={selectedTarget === player.seatNumber}
+                  isTargetable={true}
+                  onClick={() => setSelectedTarget(player.seatNumber)}
+                />
+              ))}
+            </div>
+
+            <div className="flex gap-2">
+              <Button
+                onClick={handleShoot}
+                disabled={!selectedTarget}
+                variant="destructive"
+              >
+                确认开枪
+              </Button>
+              <Button onClick={handleSkip} variant="outline">
+                不开枪
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 如果没有更多技能要发动，显示继续按钮 */}
+      {!currentShooter && skillPlayers.length === 0 && (
+        <Button onClick={onNextStep} className="w-full">
+          继续游戏
+        </Button>
+      )}
     </div>
   );
 }

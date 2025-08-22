@@ -14,6 +14,7 @@ export function DayPhase() {
   const {
     gameState,
     addVote,
+    completeVoting, // 添加completeVoting
     executePlayer,
     shootPlayer,
     useBomb,
@@ -162,6 +163,7 @@ export function DayPhase() {
         voteTarget={voteTarget}
         onPlayerSelect={handlePlayerSelect}
         onVote={handleVote}
+        onCompleteVoting={completeVoting}
         onExecute={handleExecute}
         onBomb={useBomb}
         onDuel={useDuel}
@@ -198,6 +200,7 @@ interface DayStepRendererProps {
   voteTarget: number | null;
   onPlayerSelect: (playerId: number) => void;
   onVote: (voterId: number, targetId: number) => void;
+  onCompleteVoting: () => void;
   onExecute: (playerId: number) => void;
   onBomb: (bomberId: number, targetId: number) => void;
   onDuel: (knightId: number, targetId: number) => void;
@@ -220,6 +223,7 @@ function DayStepRenderer({
   voteTarget,
   onPlayerSelect,
   onVote,
+  onCompleteVoting,
   onExecute,
   onBomb,
   onDuel,
@@ -239,6 +243,26 @@ function DayStepRenderer({
           players={players}
           dayState={dayState}
           onPoliceCandidate={onPoliceCandidate}
+          onPoliceWithdraw={onPoliceWithdraw}
+          onNextStep={onNextStep}
+        />
+      );
+
+    case "police_speech":
+      return (
+        <PoliceSpeechStep
+          players={players}
+          dayState={dayState}
+          onPoliceWithdraw={onPoliceWithdraw}
+          onNextStep={onNextStep}
+        />
+      );
+
+    case "police_withdraw":
+      return (
+        <PoliceWithdrawStep
+          players={players}
+          dayState={dayState}
           onPoliceWithdraw={onPoliceWithdraw}
           onNextStep={onNextStep}
         />
@@ -302,6 +326,7 @@ function DayStepRenderer({
           dayState={dayState}
           votes={dayState.votes}
           onVote={onVote}
+          onCompleteVoting={onCompleteVoting}
           onNextStep={onNextStep}
           onBomb={onBomb}
         />
@@ -384,6 +409,10 @@ function DiscussionStep({
   const [showSpecialAction, setShowSpecialAction] = useState<
     "bomb" | "duel" | null
   >(null);
+  const [selectedBomber, setSelectedBomber] = useState<number | null>(null); // 选择的自爆狼人
+  const [selectedBombTarget, setSelectedBombTarget] = useState<number | null>(
+    null
+  ); // 自爆目标
   const [speakingOrder, setSpeakingOrder] = useState<number[]>([]);
   const [orderSelected, setOrderSelected] = useState(false);
   const [timerKey, setTimerKey] = useState(0); // 用于重置计时器
@@ -398,9 +427,10 @@ function DiscussionStep({
   const lastNightDeaths = deaths?.length === 1 ? deaths : [];
   const singleDeath = lastNightDeaths.length === 1 ? lastNightDeaths[0] : null;
 
-  const whiteWolf = players.find(
+  // 找到可以自爆的狼人（所有狼人都可以自爆）
+  const canBombWolves = players.filter(
     (p: Player) =>
-      p.role.type === "white_wolf" && p.isAlive && !p.hasUsedAbility?.bomb
+      p.role.team === "werewolf" && p.isAlive && !p.hasUsedAbility?.bomb
   );
   const knight = players.find(
     (p: Player) =>
@@ -487,16 +517,33 @@ function DiscussionStep({
   };
 
   const handleSpecialAction = (type: "bomb" | "duel") => {
-    if (!selectedPlayer) return;
-
-    if (type === "bomb" && whiteWolf) {
-      onBomb(whiteWolf.seatNumber, selectedPlayer);
-    } else if (type === "duel" && knight) {
+    if (type === "bomb") {
+      // 自爆逻辑已在特殊技能对话框中处理
+      return;
+    } else if (type === "duel" && knight && selectedPlayer) {
       onDuel(knight.seatNumber, selectedPlayer);
+      setShowSpecialAction(null);
+      onPlayerSelect(null);
+    }
+  };
+
+  const handleBombAction = () => {
+    if (!selectedBomber) return;
+
+    const bomber = players.find((p: Player) => p.seatNumber === selectedBomber);
+    const isWhiteWolfKing = bomber?.role.type === "wolf_king";
+
+    if (isWhiteWolfKing && selectedBombTarget) {
+      // 白狼王自爆带人
+      onBomb(selectedBomber, selectedBombTarget);
+    } else if (!isWhiteWolfKing) {
+      // 普通狼人自爆
+      onBomb(selectedBomber, selectedBomber);
     }
 
     setShowSpecialAction(null);
-    onPlayerSelect(null);
+    setSelectedBomber(null);
+    setSelectedBombTarget(null);
   };
 
   return (
@@ -642,17 +689,17 @@ function DiscussionStep({
       )}
 
       {/* 特殊技能按钮 */}
-      {(whiteWolf || knight) && (
+      {(canBombWolves.length > 0 || knight) && (
         <Card>
           <CardContent className="p-4">
             <h3 className="font-medium mb-3">特殊技能</h3>
             <div className="flex gap-2">
-              {whiteWolf && (
+              {canBombWolves.length > 0 && (
                 <Button
                   variant="destructive"
                   onClick={() => setShowSpecialAction("bomb")}
                 >
-                  白狼王自爆
+                  狼人自爆
                 </Button>
               )}
               {knight && (
@@ -672,34 +719,159 @@ function DiscussionStep({
       {showSpecialAction && (
         <Card>
           <CardContent className="p-4">
-            <h3 className="font-medium mb-3">
-              选择{showSpecialAction === "bomb" ? "自爆" : "决斗"}目标
-            </h3>
-            <div className="player-grid mb-3">
-              {alivePlayers.map((player: Player) => (
-                <PlayerCard
-                  key={player.seatNumber}
-                  player={player}
-                  isSelected={selectedPlayer === player.seatNumber}
-                  isTargetable={true}
-                  onClick={() => onPlayerSelect(player.seatNumber)}
-                />
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <Button
-                onClick={() => handleSpecialAction(showSpecialAction)}
-                disabled={!selectedPlayer}
-              >
-                确认
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => setShowSpecialAction(null)}
-              >
-                取消
-              </Button>
-            </div>
+            {showSpecialAction === "bomb" ? (
+              // 自爆逻辑
+              <>
+                {!selectedBomber ? (
+                  // 第一步：选择自爆的狼人
+                  <>
+                    <h3 className="font-medium mb-3">选择自爆的狼人</h3>
+                    <div className="player-grid mb-3">
+                      {canBombWolves.map((wolf: Player) => (
+                        <PlayerCard
+                          key={wolf.seatNumber}
+                          player={wolf}
+                          isSelected={false}
+                          isTargetable={true}
+                          onClick={() => setSelectedBomber(wolf.seatNumber)}
+                        />
+                      ))}
+                    </div>
+                    <Button
+                      variant="outline"
+                      onClick={() => setShowSpecialAction(null)}
+                    >
+                      取消
+                    </Button>
+                  </>
+                ) : (
+                  // 第二步：如果是白狼王，选择带走的目标
+                  (() => {
+                    const bomber = players.find(
+                      (p: Player) => p.seatNumber === selectedBomber
+                    );
+                    const isWhiteWolfKing = bomber?.role.type === "wolf_king";
+
+                    return (
+                      <>
+                        <h3 className="font-medium mb-3">
+                          {selectedBomber}号{bomber?.role.name}自爆
+                          {isWhiteWolfKing ? " - 选择带走的玩家" : ""}
+                        </h3>
+
+                        {isWhiteWolfKing ? (
+                          // 白狼王可以选择目标
+                          <>
+                            <div className="player-grid mb-3">
+                              {alivePlayers
+                                .filter(
+                                  (p: Player) => p.seatNumber !== selectedBomber
+                                )
+                                .map((player: Player) => (
+                                  <PlayerCard
+                                    key={player.seatNumber}
+                                    player={player}
+                                    isSelected={
+                                      selectedBombTarget === player.seatNumber
+                                    }
+                                    isTargetable={true}
+                                    onClick={() =>
+                                      setSelectedBombTarget(player.seatNumber)
+                                    }
+                                  />
+                                ))}
+                            </div>
+                            <div className="flex gap-2">
+                              <Button
+                                onClick={handleBombAction}
+                                disabled={!selectedBombTarget}
+                                variant="destructive"
+                              >
+                                确认自爆并带走
+                              </Button>
+                              <Button
+                                variant="outline"
+                                onClick={() => {
+                                  setSelectedBomber(null);
+                                  setSelectedBombTarget(null);
+                                }}
+                              >
+                                重新选择
+                              </Button>
+                              <Button
+                                variant="outline"
+                                onClick={() => setShowSpecialAction(null)}
+                              >
+                                取消
+                              </Button>
+                            </div>
+                          </>
+                        ) : (
+                          // 普通狼人直接自爆
+                          <>
+                            <p className="text-sm text-gray-600 mb-3">
+                              只有白狼王自爆时才能带走其他玩家
+                            </p>
+                            <div className="flex gap-2">
+                              <Button
+                                onClick={handleBombAction}
+                                variant="destructive"
+                              >
+                                确认自爆
+                              </Button>
+                              <Button
+                                variant="outline"
+                                onClick={() => {
+                                  setSelectedBomber(null);
+                                }}
+                              >
+                                重新选择
+                              </Button>
+                              <Button
+                                variant="outline"
+                                onClick={() => setShowSpecialAction(null)}
+                              >
+                                取消
+                              </Button>
+                            </div>
+                          </>
+                        )}
+                      </>
+                    );
+                  })()
+                )}
+              </>
+            ) : (
+              // 决斗逻辑
+              <>
+                <h3 className="font-medium mb-3">选择决斗目标</h3>
+                <div className="player-grid mb-3">
+                  {alivePlayers.map((player: Player) => (
+                    <PlayerCard
+                      key={player.seatNumber}
+                      player={player}
+                      isSelected={selectedPlayer === player.seatNumber}
+                      isTargetable={true}
+                      onClick={() => onPlayerSelect(player.seatNumber)}
+                    />
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => handleSpecialAction(showSpecialAction)}
+                    disabled={!selectedPlayer}
+                  >
+                    确认决斗
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowSpecialAction(null)}
+                  >
+                    取消
+                  </Button>
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
       )}
@@ -727,6 +899,7 @@ function VoteStep({
   dayState,
   votes,
   onVote,
+  onCompleteVoting,
   onNextStep,
   onBomb,
 }: any) {
@@ -744,9 +917,9 @@ function VoteStep({
     (p: Player) => !votes.some((v: any) => v.voter === p.seatNumber)
   );
 
-  // 找到可以自爆的狼人（只有白狼王可以自爆）
+  // 找到可以自爆的狼人（所有狼人都可以自爆）
   const canBombWolves = alivePlayers.filter(
-    (p: Player) => p.role.type === "wolf_king" && !p.hasUsedAbility?.bomb
+    (p: Player) => p.role.team === "werewolf" && !p.hasUsedAbility?.bomb
   );
 
   const handleVote = () => {
@@ -866,7 +1039,10 @@ function VoteStep({
       )}
 
       <Button
-        onClick={onNextStep}
+        onClick={() => {
+          onCompleteVoting(); // 先记录投票统计
+          onNextStep(); // 然后进入下一步
+        }}
         disabled={remainingVoters.length > 0}
         className="w-full"
       >
@@ -901,34 +1077,90 @@ function VoteStep({
       {showBombDialog && (
         <Card className="border-red-500">
           <CardContent className="p-4">
-            <h3 className="font-medium mb-3 text-red-600">
-              {showBombDialog.bomber}号狼人自爆 - 选择带走的玩家
-            </h3>
-            <div className="player-grid mb-3">
-              {alivePlayers
-                .filter((p: Player) => p.seatNumber !== showBombDialog.bomber)
-                .map((player: Player) => (
-                  <PlayerCard
-                    key={player.seatNumber}
-                    player={player}
-                    isSelected={selectedBombTarget === player.seatNumber}
-                    isTargetable={true}
-                    onClick={() => setSelectedBombTarget(player.seatNumber)}
-                  />
-                ))}
-            </div>
-            <div className="flex gap-2">
-              <Button
-                onClick={handleConfirmBomb}
-                disabled={!selectedBombTarget}
-                variant="destructive"
-              >
-                确认自爆
-              </Button>
-              <Button onClick={() => setShowBombDialog(null)} variant="outline">
-                取消
-              </Button>
-            </div>
+            {(() => {
+              const bomber = players.find(
+                (p: Player) => p.seatNumber === showBombDialog.bomber
+              );
+              const isWhiteWolfKing = bomber?.role.type === "wolf_king";
+
+              return (
+                <>
+                  <h3 className="font-medium mb-3 text-red-600">
+                    {showBombDialog.bomber}号{bomber?.role.name}自爆
+                    {isWhiteWolfKing ? " - 选择带走的玩家" : ""}
+                  </h3>
+
+                  {isWhiteWolfKing ? (
+                    // 白狼王可以选择带人
+                    <>
+                      <div className="player-grid mb-3">
+                        {alivePlayers
+                          .filter(
+                            (p: Player) =>
+                              p.seatNumber !== showBombDialog.bomber
+                          )
+                          .map((player: Player) => (
+                            <PlayerCard
+                              key={player.seatNumber}
+                              player={player}
+                              isSelected={
+                                selectedBombTarget === player.seatNumber
+                              }
+                              isTargetable={true}
+                              onClick={() =>
+                                setSelectedBombTarget(player.seatNumber)
+                              }
+                            />
+                          ))}
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={handleConfirmBomb}
+                          disabled={!selectedBombTarget}
+                          variant="destructive"
+                        >
+                          确认自爆并带走
+                        </Button>
+                        <Button
+                          onClick={() => setShowBombDialog(null)}
+                          variant="outline"
+                        >
+                          取消
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    // 其他狼人只能自爆，不能带人
+                    <>
+                      <p className="text-sm text-gray-600 mb-3">
+                        只有白狼王自爆时才能带走其他玩家
+                      </p>
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={() => {
+                            // 普通狼人自爆，不带人（target为自己）
+                            onBomb(
+                              showBombDialog.bomber,
+                              showBombDialog.bomber
+                            );
+                            setShowBombDialog(null);
+                          }}
+                          variant="destructive"
+                        >
+                          确认自爆
+                        </Button>
+                        <Button
+                          onClick={() => setShowBombDialog(null)}
+                          variant="outline"
+                        >
+                          取消
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </>
+              );
+            })()}
           </CardContent>
         </Card>
       )}
@@ -1247,7 +1479,7 @@ function PoliceCampaignStep({
         className="w-full"
         disabled={candidates.length === 0}
       >
-        确认上警名单，进入投票
+        确认上警名单，开始发言
       </Button>
     </div>
   );
@@ -1740,6 +1972,289 @@ function SkillActivationStep({
           继续游戏
         </Button>
       )}
+    </div>
+  );
+}
+
+// 警上发言环节
+function PoliceSpeechStep({
+  players,
+  dayState,
+  onPoliceWithdraw,
+  onNextStep,
+}: any) {
+  const [currentPhase, setCurrentPhase] = useState<"speech" | "completed">(
+    "speech"
+  );
+  const [timerKey, setTimerKey] = useState(0);
+
+  const candidates = dayState.policeCandidates || [];
+  const speechOrder = dayState.policeSpeechOrder || [];
+  const speechIndex = dayState.policeSpeechIndex || 0;
+  const currentSpeaker = speechOrder[speechIndex];
+
+  const { generatePoliceSpeechOrder, advancePoliceSpeech } = useGameStore();
+
+  // 初始化发言顺序
+  useEffect(() => {
+    if (speechOrder.length === 0 && candidates.length > 0) {
+      generatePoliceSpeechOrder();
+    }
+  }, [candidates.length, speechOrder.length, generatePoliceSpeechOrder]);
+
+  const handleSpeechComplete = () => {
+    const nextIndex = speechIndex + 1;
+    if (nextIndex < speechOrder.length) {
+      advancePoliceSpeech();
+      setTimerKey((prev) => prev + 1); // 重置计时器
+    } else {
+      setCurrentPhase("completed");
+    }
+  };
+
+  const handleWithdraw = (playerId: number) => {
+    onPoliceWithdraw(playerId);
+    // 如果当前发言者退水，自动跳到下一个
+    if (playerId === currentSpeaker) {
+      handleSpeechComplete();
+    }
+    setTimerKey((prev) => prev + 1); // 重置计时器
+  };
+
+  const getCurrentSpeakerPlayer = () => {
+    return players.find((p: Player) => p.seatNumber === currentSpeaker);
+  };
+
+  const getSpeechOrderDisplay = () => {
+    const startPlayer = speechOrder[0];
+    if (!startPlayer) return "";
+
+    const isClockwise = startPlayer % 2 === 1;
+    return `发言顺序：${speechOrder.join("→")}号 (${startPlayer}号位${
+      isClockwise ? "顺时针" : "逆时针"
+    })`;
+  };
+
+  if (speechOrder.length === 0) {
+    return (
+      <div className="space-y-4">
+        <DialogueBox text="正在生成发言顺序..." />
+      </div>
+    );
+  }
+
+  if (currentPhase === "completed") {
+    return (
+      <div className="space-y-4">
+        <DialogueBox text="所有警上玩家发言完毕，进入退水环节" />
+        <Card>
+          <CardContent className="p-4">
+            <h3 className="font-medium mb-3">发言完成</h3>
+            <p className="text-sm text-gray-600 mb-3">
+              所有上警玩家已完成发言，接下来进入最后的退水机会
+            </p>
+            <div className="text-xs text-gray-500">
+              发言顺序：{speechOrder.join("→")}号
+            </div>
+          </CardContent>
+        </Card>
+        <Button onClick={onNextStep} className="w-full">
+          进入退水环节
+        </Button>
+      </div>
+    );
+  }
+
+  const currentSpeakerPlayer = getCurrentSpeakerPlayer();
+
+  return (
+    <div className="space-y-4">
+      <DialogueBox text={`警上发言环节 - ${currentSpeaker}号发言`} />
+
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-medium">
+              {currentSpeaker}号发言 ({speechIndex + 1}/{speechOrder.length})
+            </h3>
+            <CountdownTimer
+              key={timerKey}
+              initialSeconds={90} // 90秒发言时间
+              autoStart={true}
+              onTimeUp={handleSpeechComplete}
+            />
+          </div>
+
+          <div className="text-sm text-gray-600 mb-3">
+            {getSpeechOrderDisplay()}
+          </div>
+
+          {currentSpeakerPlayer && (
+            <div className="flex justify-center mb-4">
+              <PlayerCard
+                player={currentSpeakerPlayer}
+                showRole={false}
+                showStatus={true}
+                className="ring-2 ring-blue-500"
+              />
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <p className="text-sm text-gray-600">发言期间可以选择：</p>
+            <div className="flex gap-2">
+              <Button
+                onClick={handleSpeechComplete}
+                variant="default"
+                size="sm"
+              >
+                发言完毕
+              </Button>
+              <Button
+                onClick={() => handleWithdraw(currentSpeaker)}
+                variant="destructive"
+                size="sm"
+              >
+                直接退水
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-4 p-2 bg-blue-50 border border-blue-200 rounded">
+            <p className="text-xs text-blue-600">
+              💡 提示：轮到自己发言时可以选择直接退水，或在发言过程中/结束后退水
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 显示当前候选人列表 */}
+      <Card>
+        <CardContent className="p-4">
+          <h3 className="font-medium mb-3">当前候选人</h3>
+          <div className="player-grid">
+            {candidates.map((candidateId: number) => {
+              const player = players.find(
+                (p: Player) => p.seatNumber === candidateId
+              );
+              if (!player) return null;
+
+              return (
+                <div key={candidateId} className="relative">
+                  <PlayerCard
+                    player={player}
+                    showRole={false}
+                    showStatus={true}
+                    className={
+                      candidateId === currentSpeaker
+                        ? "ring-2 ring-blue-500"
+                        : ""
+                    }
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="absolute -bottom-2 -right-2 text-xs px-2 py-1"
+                    onClick={() => handleWithdraw(candidateId)}
+                  >
+                    退水
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// 退水环节
+function PoliceWithdrawStep({
+  players,
+  dayState,
+  onPoliceWithdraw,
+  onNextStep,
+}: any) {
+  const [timeRemaining, setTimeRemaining] = useState(30); // 30秒退水时间
+  const [timerKey, setTimerKey] = useState(0);
+
+  const candidates = dayState.policeCandidates || [];
+  const withdrawnPlayers = dayState.policeWithdrawn || [];
+
+  const handleWithdraw = (playerId: number) => {
+    onPoliceWithdraw(playerId);
+  };
+
+  return (
+    <div className="space-y-4">
+      <DialogueBox text="最后退水机会 - 投票开始前的最后时刻" />
+
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-medium">退水时间</h3>
+            <CountdownTimer
+              key={timerKey}
+              initialSeconds={30} // 30秒退水时间
+              autoStart={true}
+              onTimeUp={onNextStep}
+            />
+          </div>
+
+          <p className="text-sm text-gray-600 mb-4">
+            这是投票前的最后退水机会，时间结束后将直接开始投票
+          </p>
+
+          {candidates.length > 0 ? (
+            <>
+              <h4 className="font-medium mb-3">当前候选人</h4>
+              <div className="player-grid mb-4">
+                {candidates.map((candidateId: number) => {
+                  const player = players.find(
+                    (p: Player) => p.seatNumber === candidateId
+                  );
+                  if (!player) return null;
+
+                  return (
+                    <div key={candidateId} className="relative">
+                      <PlayerCard
+                        player={player}
+                        showRole={false}
+                        showStatus={true}
+                      />
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="absolute -bottom-2 -right-2 text-xs px-2 py-1"
+                        onClick={() => handleWithdraw(candidateId)}
+                      >
+                        退水
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <div className="text-center py-4">
+              <p className="text-gray-500">没有候选人，将跳过警长选举</p>
+            </div>
+          )}
+
+          {withdrawnPlayers.length > 0 && (
+            <div className="mt-3 p-2 bg-amber-50 border border-amber-200 rounded">
+              <p className="text-sm text-amber-800">
+                ⚠️ 已退水玩家：{withdrawnPlayers.join("、")}号
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Button onClick={onNextStep} className="w-full">
+        退水时间结束，开始投票
+      </Button>
     </div>
   );
 }

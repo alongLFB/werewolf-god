@@ -45,6 +45,7 @@ interface GameStore {
 
   // 白天行动
   addVote: (voterId: number, targetId: number) => void;
+  completeVoting: () => void; // 完成投票并记录票数
   executePlayer: (playerId: number) => void;
   shootPlayer: (shooterId: number, targetId: number) => void;
   useBomb: (bomberId: number, targetId: number) => void;
@@ -54,6 +55,8 @@ interface GameStore {
   addPoliceCandidate: (playerId: number) => void;
   removePoliceCandidate: (playerId: number) => void;
   withdrawFromPolice: (playerId: number) => void;
+  generatePoliceSpeechOrder: () => void;
+  advancePoliceSpeech: () => void;
   addPoliceVote: (voterId: number, targetId: number) => void;
   addPoliceAbstention: (voterId: number) => void;
   electPoliceChief: () => void;
@@ -171,6 +174,8 @@ export const useGameStore = create<GameStore>()(
                 votes: [],
                 policeCandidates: [],
                 policeWithdrawn: [],
+                policeSpeechOrder: [],
+                policeSpeechIndex: 0,
                 policeVotes: [],
                 policeAbstentions: [],
                 policeTieBreaker: false,
@@ -326,6 +331,8 @@ export const useGameStore = create<GameStore>()(
               votes: [],
               policeCandidates: [],
               policeWithdrawn: [],
+              policeSpeechOrder: [],
+              policeSpeechIndex: 0,
               policeVotes: [],
               policeAbstentions: [],
               policeTieBreaker: false,
@@ -474,7 +481,13 @@ export const useGameStore = create<GameStore>()(
 
             // 动态构建步骤数组
             const baseSteps: DayStep[] = shouldIncludePolice
-              ? ["police_campaign", "police_vote", "dawn"]
+              ? [
+                  "police_campaign",
+                  "police_speech",
+                  "police_withdraw",
+                  "police_vote",
+                  "dawn",
+                ]
               : ["dawn"];
 
             const middleSteps: DayStep[] = [];
@@ -488,6 +501,8 @@ export const useGameStore = create<GameStore>()(
             // 设置是否允许自爆
             const allowSelfDestruct = [
               "police_campaign",
+              "police_speech",
+              "police_withdraw",
               "discussion",
             ].includes(gameState.dayState.currentStep);
             const currentIndex = steps.indexOf(gameState.dayState.currentStep);
@@ -496,6 +511,8 @@ export const useGameStore = create<GameStore>()(
               const nextStep = steps[currentIndex + 1];
               const newAllowSelfDestruct = [
                 "police_campaign",
+                "police_speech",
+                "police_withdraw",
                 "discussion",
               ].includes(nextStep);
               set({
@@ -728,7 +745,7 @@ export const useGameStore = create<GameStore>()(
 
         // 投票
         addVote: (voterId: number, targetId: number) => {
-          const { gameState } = get();
+          const { gameState, addActionRecord } = get();
           if (!gameState) return;
 
           const isPoliceChief = gameState.dayState.policeChief === voterId;
@@ -748,6 +765,56 @@ export const useGameStore = create<GameStore>()(
               },
               updatedAt: new Date(),
             },
+          });
+
+          // 添加行动记录
+          addActionRecord({
+            round: gameState.round,
+            phase: "day",
+            step: "vote",
+            actor: voterId,
+            action: "vote",
+            target: targetId,
+          });
+        },
+
+        // 完成投票并记录票数统计
+        completeVoting: () => {
+          const { gameState, addActionRecord } = get();
+          if (!gameState) return;
+
+          const votes = gameState.dayState.votes;
+          const voteCount: Record<number, number> = {};
+          let abstainCount = 0;
+
+          votes.forEach((vote) => {
+            if (vote.target === 0) {
+              abstainCount++;
+            } else {
+              voteCount[vote.target] = (voteCount[vote.target] || 0) + 1;
+            }
+          });
+
+          // 生成票数统计描述
+          const voteResults: string[] = [];
+          Object.entries(voteCount).forEach(([target, count]) => {
+            voteResults.push(`${target}号(${count}票)`);
+          });
+          if (abstainCount > 0) {
+            voteResults.push(`弃票(${abstainCount}票)`);
+          }
+
+          const voteResultText =
+            voteResults.length > 0 ? voteResults.join(", ") : "无投票";
+
+          addActionRecord({
+            round: gameState.round,
+            phase: "day",
+            step: "vote",
+            actor: 0, // 系统记录
+            action: "vote",
+            target: 0,
+            description: `投票结果: ${voteResultText}`,
           });
         },
 
@@ -810,6 +877,12 @@ export const useGameStore = create<GameStore>()(
             get();
           if (!gameState) return;
 
+          const bomber = gameState.players.find(
+            (p) => p.seatNumber === bomberId
+          );
+          const isWhiteWolfKing = bomber?.role.type === "wolf_king";
+
+          // 自爆者死亡
           updatePlayer(bomberId, {
             isAlive: false,
             deathReason: "bomb",
@@ -819,12 +892,34 @@ export const useGameStore = create<GameStore>()(
             },
           });
 
-          updatePlayer(targetId, {
-            isAlive: false,
-            deathReason: "bomb",
-            deathRound: gameState.round,
-            deathPhase: "day",
-          });
+          // 如果是白狼王自爆且选择了目标，目标也死亡
+          if (isWhiteWolfKing && targetId !== bomberId) {
+            updatePlayer(targetId, {
+              isAlive: false,
+              deathReason: "bomb",
+              deathRound: gameState.round,
+              deathPhase: "day",
+            });
+
+            addActionRecord({
+              round: gameState.round,
+              phase: "day",
+              actor: bomberId,
+              action: "bomb",
+              target: targetId,
+              description: `${bomberId}号白狼王自爆并带走${targetId}号`,
+            });
+          } else {
+            // 普通狼人自爆或白狼王选择不带人
+            addActionRecord({
+              round: gameState.round,
+              phase: "day",
+              actor: bomberId,
+              action: "bomb",
+              target: bomberId,
+              description: `${bomberId}号${bomber?.role.name}自爆`,
+            });
+          }
 
           // 增加爆破计数
           set({
@@ -833,14 +928,6 @@ export const useGameStore = create<GameStore>()(
               explosionCount: gameState.explosionCount + 1,
               updatedAt: new Date(),
             },
-          });
-
-          addActionRecord({
-            round: gameState.round,
-            phase: "day",
-            actor: bomberId,
-            action: "bomb",
-            target: targetId,
           });
 
           checkGameEnd();
@@ -1031,6 +1118,73 @@ export const useGameStore = create<GameStore>()(
           });
         },
 
+        // 生成警上发言顺序
+        generatePoliceSpeechOrder: () => {
+          const { gameState } = get();
+          if (!gameState) return;
+
+          const candidates = gameState.dayState.policeCandidates;
+          if (candidates.length === 0) return;
+
+          // 根据当前时间生成起始位置
+          const now = new Date();
+          const minutes = now.getMinutes();
+          const startIndex = minutes % candidates.length;
+          const startPlayer = candidates[startIndex];
+
+          // 根据"奇顺偶逆"规则确定发言顺序
+          let speechOrder: number[] = [];
+
+          if (startPlayer % 2 === 1) {
+            // 奇数号位顺时针：按座位号升序排列候选人，从起始位置开始
+            const sortedCandidates = [...candidates].sort((a, b) => a - b);
+            const startIndexInSorted = sortedCandidates.indexOf(startPlayer);
+            speechOrder = [
+              ...sortedCandidates.slice(startIndexInSorted),
+              ...sortedCandidates.slice(0, startIndexInSorted),
+            ];
+          } else {
+            // 偶数号位逆时针：按座位号降序排列候选人，从起始位置开始
+            const sortedCandidates = [...candidates].sort((a, b) => b - a);
+            const startIndexInSorted = sortedCandidates.indexOf(startPlayer);
+            speechOrder = [
+              ...sortedCandidates.slice(startIndexInSorted),
+              ...sortedCandidates.slice(0, startIndexInSorted),
+            ];
+          }
+
+          set({
+            gameState: {
+              ...gameState,
+              dayState: {
+                ...gameState.dayState,
+                policeSpeechOrder: speechOrder,
+                policeSpeechIndex: 0,
+              },
+              updatedAt: new Date(),
+            },
+          });
+        },
+
+        // 推进警上发言
+        advancePoliceSpeech: () => {
+          const { gameState } = get();
+          if (!gameState) return;
+
+          const nextIndex = gameState.dayState.policeSpeechIndex + 1;
+
+          set({
+            gameState: {
+              ...gameState,
+              dayState: {
+                ...gameState.dayState,
+                policeSpeechIndex: nextIndex,
+              },
+              updatedAt: new Date(),
+            },
+          });
+        },
+
         addPoliceVote: (voterId: number, targetId: number) => {
           const { gameState, addActionRecord } = get();
           if (!gameState) return;
@@ -1058,13 +1212,13 @@ export const useGameStore = create<GameStore>()(
             phase: "day",
             step: "police_vote",
             actor: voterId,
-            action: "vote",
+            action: "police_elect", // 改为更明确的警长选举行动
             target: targetId,
           });
         },
 
         electPoliceChief: () => {
-          const { gameState } = get();
+          const { gameState, addActionRecord } = get();
           if (!gameState) return;
 
           const policeVotes = gameState.dayState.policeVotes;
@@ -1073,6 +1227,23 @@ export const useGameStore = create<GameStore>()(
           policeVotes.forEach((vote) => {
             voteCount[vote.target] = (voteCount[vote.target] || 0) + 1;
           });
+
+          // 添加票数统计记录
+          if (Object.keys(voteCount).length > 0) {
+            const voteResult = Object.entries(voteCount)
+              .map(([target, count]) => `${target}号(${count}票)`)
+              .join(", ");
+
+            addActionRecord({
+              round: gameState.round,
+              phase: "day",
+              step: "police_vote",
+              actor: 0, // 系统记录
+              action: "police_elect",
+              target: 0,
+              description: `警长选举票数统计: ${voteResult}`,
+            });
+          }
 
           // 如果没有投票，直接返回，不选举警长
           if (Object.keys(voteCount).length === 0) {
@@ -1086,6 +1257,16 @@ export const useGameStore = create<GameStore>()(
 
           // If there's a clear winner, elect them as police chief
           if (winners.length === 1) {
+            addActionRecord({
+              round: gameState.round,
+              phase: "day",
+              step: "police_vote",
+              actor: 0, // 系统记录
+              action: "police_elect",
+              target: winners[0],
+              description: `${winners[0]}号当选警长`,
+            });
+
             set({
               gameState: {
                 ...gameState,
@@ -1099,6 +1280,16 @@ export const useGameStore = create<GameStore>()(
             });
           } else if (winners.length > 1) {
             // Handle tie - start tiebreaker with only tied candidates
+            addActionRecord({
+              round: gameState.round,
+              phase: "day",
+              step: "police_vote",
+              actor: 0, // 系统记录
+              action: "police_elect",
+              target: 0,
+              description: `警长选举平票，进入PK: ${winners.join("号、")}号`,
+            });
+
             get().startPoliceTieBreaker(winners);
           }
         },

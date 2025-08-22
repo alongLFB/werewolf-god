@@ -313,7 +313,7 @@ function DayStepRenderer({
           players={players}
           votes={dayState.votes}
           onExecute={onExecute}
-          onNextPhase={onNextPhase}
+          onNextStep={onNextStep}
         />
       );
 
@@ -744,9 +744,9 @@ function VoteStep({
     (p: Player) => !votes.some((v: any) => v.voter === p.seatNumber)
   );
 
-  // 找到可以自爆的狼人
+  // 找到可以自爆的狼人（只有白狼王可以自爆）
   const canBombWolves = alivePlayers.filter(
-    (p: Player) => p.role.team === "werewolf" && !p.hasUsedAbility?.bomb
+    (p: Player) => p.role.type === "wolf_king" && !p.hasUsedAbility?.bomb
   );
 
   const handleVote = () => {
@@ -937,7 +937,7 @@ function VoteStep({
 }
 
 // 执行结果环节
-function ExecutionStep({ players, votes, onExecute, onNextPhase }: any) {
+function ExecutionStep({ players, votes, onExecute, onNextStep }: any) {
   const [skillPhase, setSkillPhase] = useState<
     "waiting" | "last_words" | "countdown" | "completed"
   >("waiting");
@@ -949,7 +949,7 @@ function ExecutionStep({ players, votes, onExecute, onNextPhase }: any) {
     return (
       <div className="space-y-4">
         <DialogueBox text={DIALOGUE_SCRIPTS.vote.tie} />
-        <Button onClick={onNextPhase} className="w-full">
+        <Button onClick={onNextStep} className="w-full">
           进入夜晚
         </Button>
       </div>
@@ -973,7 +973,7 @@ function ExecutionStep({ players, votes, onExecute, onNextPhase }: any) {
     setSkillPhase("completed");
     // 3秒后自动进入下一轮夜晚
     setTimeout(() => {
-      onNextPhase();
+      onNextStep();
     }, 3000);
   };
 
@@ -1067,7 +1067,7 @@ function ExecutionStep({ players, votes, onExecute, onNextPhase }: any) {
           {skillPhase === "completed" && (
             <div className="text-center space-y-4">
               <DialogueBox text="放逐完成，准备进入夜晚" />
-              <Button onClick={onNextPhase} className="w-full">
+              <Button onClick={onNextStep} className="w-full">
                 进入夜晚
               </Button>
             </div>

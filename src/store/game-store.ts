@@ -172,6 +172,7 @@ export const useGameStore = create<GameStore>()(
                 deaths: [],
                 speeches: [],
                 votes: [],
+                policeChief: undefined,
                 policeCandidates: [],
                 policeWithdrawn: [],
                 policeSpeechOrder: [],
@@ -329,6 +330,7 @@ export const useGameStore = create<GameStore>()(
               deaths: [],
               speeches: [],
               votes: [],
+              policeChief: gameState.dayState.policeChief, // 保持现有的警长状态
               policeCandidates: [],
               policeWithdrawn: [],
               policeSpeechOrder: [],
@@ -508,13 +510,30 @@ export const useGameStore = create<GameStore>()(
             const currentIndex = steps.indexOf(gameState.dayState.currentStep);
 
             if (currentIndex < steps.length - 1) {
-              const nextStep = steps[currentIndex + 1];
+              let nextStepIndex = currentIndex + 1;
+              let nextStep = steps[nextStepIndex];
+
+              // 特殊处理警长竞选流程：必须有候选人才能进入后续步骤
+              if (gameState.dayState.currentStep === "police_campaign") {
+                const hasCandidates =
+                  gameState.dayState.policeCandidates &&
+                  gameState.dayState.policeCandidates.length > 0;
+
+                if (!hasCandidates) {
+                  // 没有候选人时，不能进入下一步骤，保持在 police_campaign
+                  set({ error: "必须至少有一名候选人才能开始警长发言阶段" });
+                  return;
+                }
+                // 有候选人时，正常进入 police_speech
+              }
+
               const newAllowSelfDestruct = [
                 "police_campaign",
                 "police_speech",
                 "police_withdraw",
                 "discussion",
               ].includes(nextStep);
+
               set({
                 gameState: {
                   ...gameState,

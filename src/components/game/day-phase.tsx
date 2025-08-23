@@ -1474,13 +1474,23 @@ function PoliceCampaignStep({
         </CardContent>
       </Card>
 
-      <Button
-        onClick={onNextStep}
-        className="w-full"
-        disabled={candidates.length === 0}
-      >
-        确认上警名单，开始发言
-      </Button>
+      <div className="flex gap-2">
+        <Button
+          onClick={onNextStep}
+          className="flex-1"
+          disabled={candidates.length === 0}
+        >
+          确认上警名单，开始发言
+        </Button>
+      </div>
+
+      {candidates.length === 0 && (
+        <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <p className="text-sm text-yellow-800">
+            ⚠️ 警长竞选是必须的，请至少选择一名玩家上警竞选警长
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -1519,7 +1529,7 @@ function PoliceVoteStep({
       !dayState.policeTieBreaker &&
       !dayState.policeChief
     ) {
-      // 没有人当选警长（如没有候选人），进入下一步
+      // 没有人当选警长，进入下一步
       onNextStep();
       setElectionFinished(false);
     }
@@ -1577,6 +1587,15 @@ function PoliceVoteStep({
   policeVotes.forEach((vote: any) => {
     voteCount[vote.target] = (voteCount[vote.target] || 0) + 1;
   });
+
+  // 如果没有候选人，显示跳过信息
+  if (candidates.length === 0) {
+    return (
+      <div className="space-y-4">
+        <DialogueBox text="没有警长候选人，跳过警长投票" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -2034,6 +2053,17 @@ function PoliceSpeechStep({
       isClockwise ? "顺时针" : "逆时针"
     })`;
   };
+
+  if (candidates.length === 0) {
+    return (
+      <div className="space-y-4">
+        <DialogueBox text="警长竞选阶段尚未完成，请返回竞选阶段选择候选人" />
+        <Button onClick={() => window.history.back()} className="w-full">
+          返回竞选阶段
+        </Button>
+      </div>
+    );
+  }
 
   if (speechOrder.length === 0) {
     return (

@@ -166,6 +166,15 @@ export const useGameStore = create<GameStore>()(
                 currentStep: initialStep,
                 hunterCanShoot: true,
                 completed: false,
+                guardTarget: undefined,
+                guardLastTarget: undefined,
+                wolfKillTarget: undefined,
+                seerCheckTarget: undefined,
+                seerCheckResult: undefined,
+                witchAntidoteTarget: undefined,
+                witchPoisonTarget: undefined,
+                witchAntidoteUsed: false,
+                witchPoisonUsed: false,
               },
               dayState: {
                 currentStep: "dawn",
@@ -311,6 +320,16 @@ export const useGameStore = create<GameStore>()(
               currentStep: newStep,
               hunterCanShoot: true,
               completed: false,
+              // 清空夜晚行动状态，准备新的一夜
+              guardTarget: undefined,
+              guardLastTarget: gameState.nightState.guardLastTarget, // 保持上一轮的守护目标记录
+              wolfKillTarget: undefined,
+              seerCheckTarget: undefined,
+              seerCheckResult: undefined,
+              witchAntidoteTarget: undefined,
+              witchPoisonTarget: undefined,
+              witchAntidoteUsed: false,
+              witchPoisonUsed: false,
             };
             newDayState = gameState.dayState;
           } else {

@@ -610,6 +610,9 @@ function WitchStep({
     wolfKillTarget !== witch.seatNumber;
   const canUsePoison = !witch.hasUsedAbility?.poison;
 
+  // 女巫使用解药后不能再看到死亡信息
+  const canSeeDeathInfo = !witch.hasUsedAbility?.antidote;
+
   const handleActionSelect = (action: "antidote" | "poison") => {
     setSelectedAction(action);
     setCurrentStep(action);
@@ -633,7 +636,15 @@ function WitchStep({
     <div className="space-y-4">
       <DialogueBox text={DIALOGUE_SCRIPTS.witch.start} />
 
-      <DialogueBox text={DIALOGUE_SCRIPTS.witch.death(wolfKillTarget)} />
+      {/* 只有在女巫没有使用过解药时才显示死亡信息 */}
+      {canSeeDeathInfo && (
+        <DialogueBox text={DIALOGUE_SCRIPTS.witch.death(wolfKillTarget)} />
+      )}
+
+      {/* 如果女巫已经使用过解药，显示不能获知死亡信息的提示 */}
+      {!canSeeDeathInfo && (
+        <DialogueBox text="你已经使用过解药，无法获知今晚的死亡信息" />
+      )}
 
       {/* 选择药品阶段 */}
       {currentStep === "choice" && !actionCompleted && (
